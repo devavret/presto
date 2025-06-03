@@ -26,24 +26,47 @@ services:
       retries: 5
       start_period: 60s
 
-  # Native Presto Worker (Prestissimo)
-  presto-worker:
-    image: presto/prestissimo-runtime:centos9-nag-test
+  # # Native Presto Worker (Prestissimo)
+  # presto-worker:
+  #   image: presto/prestissimo-runtime:centos9-nag-test
+  #   container_name: presto-worker
+  #   hostname: presto-worker
+  #   networks:
+  #     - presto-network
+  #   ports:
+  #     - "7777:7777"
+  #   volumes:
+  #     - ./worker-config.sonnet:/opt/presto-server/etc
+  #   environment:
+  #     - GLOG_logtostderr=1
+  #     - GLOG_v=1
+  #   command: ["presto_server", "--etc-dir=/opt/presto-server/etc", "--velox_cudf_debug=true"]
+  #   depends_on:
+  #     presto-coordinator:
+  #       condition: service_healthy
+  #   privileged: true
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+
+  prestissimo-worker-dev:
+    # Taken from centos-native-dependency, this image retains source code for development
+    # You need to run presto-worker manually like this:
+    # GLOG_logtostderr=1 ./_build/release/presto_cpp/main/presto_server --etc-dir=/prestissimo/docker-setup/worker-config.sonnet/
+    image: presto/prestissimo-dependency:centos9
     container_name: presto-worker
     hostname: presto-worker
     networks:
       - presto-network
-    ports:
-      - "7777:7777"
+    build:
+      context: ../
+      dockerfile: scripts/dockerfiles/centos-dependency.dockerfile
     volumes:
-      - ./worker-config.sonnet:/opt/presto-server/etc
-    environment:
-      - GLOG_logtostderr=1
-      - GLOG_v=1
-    command: ["presto_server", "--etc-dir=/opt/presto-server/etc", "--velox_cudf_debug=true"]
-    depends_on:
-      presto-coordinator:
-        condition: service_healthy
+      - /home/devavret/Development/Velox/presto/presto-native-execution:/prestissimo
     privileged: true
     deploy:
       resources:
@@ -51,7 +74,17 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [gpu]              
+    ports:
+      - "2224:2224"
+    environment:
+      - GLOG_logtostderr=1
+      - GLOG_v=1
+    command: ["/prestissimo/_build/release/presto_cpp/main/presto_server", "--etc-dir=/prestissimo/docker-setup/worker-config.sonnet"]
+    # depends_on:
+    #   presto-coordinator:
+    #     condition: service_healthy
+
 
   # Optional: Presto CLI for testing
   # To get a terminal to input sql and stuff run this:
@@ -67,4 +100,4 @@ services:
     command: ["tail", "-f", "/dev/null"]  # Keep container running
     depends_on:
       - presto-coordinator
-      - presto-worker 
+      # - prestissimo-worker-dev 
