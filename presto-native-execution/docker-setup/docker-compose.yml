@@ -1,0 +1,70 @@
+version: '3.8'
+
+networks:
+  presto-network:
+    driver: bridge
+
+services:
+  # Java Presto Coordinator
+  presto-coordinator:
+    image: prestodb/presto:latest
+    container_name: presto-coordinator
+    hostname: presto-coordinator
+    networks:
+      - presto-network
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./coordinator-config.sonnet:/opt/presto-server/etc
+    environment:
+      - PRESTO_HOME=/opt/presto-server
+    command: ["/opt/presto-server/bin/launcher", "run"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Native Presto Worker (Prestissimo)
+  presto-worker:
+    image: presto/prestissimo-runtime:centos9-nag-test
+    container_name: presto-worker
+    hostname: presto-worker
+    networks:
+      - presto-network
+    ports:
+      - "7777:7777"
+    volumes:
+      - ./worker-config.sonnet:/opt/presto-server/etc
+    environment:
+      - GLOG_logtostderr=1
+      - GLOG_v=1
+    command: ["presto_server", "--etc-dir=/opt/presto-server/etc", "--velox_cudf_debug=true"]
+    depends_on:
+      presto-coordinator:
+        condition: service_healthy
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Optional: Presto CLI for testing
+  # To get a terminal to input sql and stuff run this:
+  # docker compose exec presto-cli presto-cli --server presto-coordinator:8080 --catalog tpch --schema tiny
+  # More in cli.sh
+  presto-cli:
+    image: prestodb/presto:latest
+    container_name: presto-cli
+    networks:
+      - presto-network
+    volumes:
+      - ./queries:/queries
+    command: ["tail", "-f", "/dev/null"]  # Keep container running
+    depends_on:
+      - presto-coordinator
+      - presto-worker 
