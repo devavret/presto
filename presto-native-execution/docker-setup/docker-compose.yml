@@ -67,6 +67,7 @@ services:
       dockerfile: scripts/dockerfiles/centos-dependency.dockerfile
     volumes:
       - /home/devavret/Development/Velox/presto/presto-native-execution:/prestissimo
+      - /home/devavret/Development/Velox/velox-private:/prestissimo/velox
     privileged: true
     deploy:
       resources:
@@ -80,16 +81,17 @@ services:
     environment:
       - GLOG_logtostderr=1
       - GLOG_v=1
+      - CCACHE_DIR=/prestissimo/_build/.ccache
     command: ["/prestissimo/_build/release/presto_cpp/main/presto_server", "--etc-dir=/prestissimo/docker-setup/worker-config.sonnet"]
     # depends_on:
     #   presto-coordinator:
     #     condition: service_healthy
 
 
-  # Optional: Presto CLI for testing
-  # To get a terminal to input sql and stuff run this:
-  # docker compose exec presto-cli presto-cli --server presto-coordinator:8080 --catalog tpch --schema tiny
-  # More in cli.sh
+    # Optional: Presto CLI for testing
+    # To get a terminal to input sql and stuff run this:
+    # docker compose exec presto-cli presto-cli --server presto-coordinator:8080 --catalog tpch --schema tiny
+    # More in cli.sh
   presto-cli:
     image: prestodb/presto:latest
     container_name: presto-cli
