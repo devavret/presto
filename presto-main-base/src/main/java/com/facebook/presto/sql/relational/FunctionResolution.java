@@ -313,6 +313,12 @@ public final class FunctionResolution
     }
 
     @Override
+    public boolean isCountIfFunction(FunctionHandle functionHandle)
+    {
+        return functionAndTypeResolver.getFunctionMetadata(functionHandle).getName().equals(functionAndTypeResolver.qualifyObjectName(QualifiedName.of("count_if")));
+    }
+
+    @Override
     public FunctionHandle countFunction()
     {
         return functionAndTypeResolver.lookupFunction("count", ImmutableList.of());
@@ -322,6 +328,16 @@ public final class FunctionResolution
     public FunctionHandle countFunction(Type valueType)
     {
         return functionAndTypeResolver.lookupFunction("count", fromTypes(valueType));
+    }
+
+    public boolean isMaxByFunction(FunctionHandle functionHandle)
+    {
+        return functionAndTypeResolver.getFunctionMetadata(functionHandle).getName().equals(functionAndTypeResolver.qualifyObjectName(QualifiedName.of("max_by")));
+    }
+
+    public boolean isMinByFunction(FunctionHandle functionHandle)
+    {
+        return functionAndTypeResolver.getFunctionMetadata(functionHandle).getName().equals(functionAndTypeResolver.qualifyObjectName(QualifiedName.of("min_by")));
     }
 
     @Override

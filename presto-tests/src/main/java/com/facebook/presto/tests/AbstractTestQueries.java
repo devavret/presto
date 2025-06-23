@@ -51,6 +51,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
+import static com.facebook.presto.SystemSessionProperties.ADD_DISTINCT_BELOW_SEMI_JOIN_BUILD;
 import static com.facebook.presto.SystemSessionProperties.ADD_PARTIAL_NODE_FOR_ROW_NUMBER_WITH_LIMIT;
 import static com.facebook.presto.SystemSessionProperties.ENABLE_INTERMEDIATE_AGGREGATIONS;
 import static com.facebook.presto.SystemSessionProperties.FIELD_NAMES_IN_JSON_CAST_ENABLED;
@@ -89,6 +90,7 @@ import static com.facebook.presto.SystemSessionProperties.REWRITE_CROSS_JOIN_OR_
 import static com.facebook.presto.SystemSessionProperties.REWRITE_EXPRESSION_WITH_CONSTANT_EXPRESSION;
 import static com.facebook.presto.SystemSessionProperties.REWRITE_LEFT_JOIN_ARRAY_CONTAINS_TO_EQUI_JOIN;
 import static com.facebook.presto.SystemSessionProperties.REWRITE_LEFT_JOIN_NULL_FILTER_TO_SEMI_JOIN;
+import static com.facebook.presto.SystemSessionProperties.REWRITE_MIN_MAX_BY_TO_TOP_N;
 import static com.facebook.presto.SystemSessionProperties.SIMPLIFY_PLAN_WITH_EMPTY_INPUT;
 import static com.facebook.presto.SystemSessionProperties.USE_DEFAULTS_FOR_CORRELATED_AGGREGATION_PUSHDOWN_THROUGH_OUTER_JOINS;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
@@ -145,6 +147,8 @@ public abstract class AbstractTestQueries
             .window(CustomRank.class)
             .scalars(CustomAdd.class)
             .scalars(CreateHll.class)
+            .scalars(CustomStructWithPassthrough.class)
+            .scalars(CustomStructWithoutPassthrough.class)
             .functions(APPLY_FUNCTION, INVOKE_FUNCTION, STATEFUL_SLEEPING_SUM)
             .getFunctions();
 
@@ -6861,6 +6865,51 @@ public abstract class AbstractTestQueries
         resultWithOptimization = computeActual(enableOptimization, sql);
         resultWithoutOptimization = computeActual(disableOptimization, sql);
         assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
+
+        // Now we do not have aggregations which has no filter
+        // multiple aggregations in query
+        sql = "select partkey, sum(quantity) filter (where discount > 0.05), sum(quantity) filter (where discount < 0.05), sum(linenumber) filter (where discount > 0.05), sum(linenumber) filter (where discount < 0.05) from lineitem group by partkey";
+        resultWithOptimization = computeActual(enableOptimization, sql);
+        resultWithoutOptimization = computeActual(disableOptimization, sql);
+        assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
+        sql = "select partkey, sum(quantity) filter (where discount > 0.05), sum(quantity) filter (where discount < 0.05), sum(linenumber), sum(linenumber) filter (where discount < 0.05) from lineitem group by partkey";
+        resultWithOptimization = computeActual(enableOptimization, sql);
+        resultWithoutOptimization = computeActual(disableOptimization, sql);
+        assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
+        // aggregations in multiple levels
+        sql = "select partkey, avg(sum) filter (where tax > 0.05), avg(sum) filter (where tax < 0.05), avg(filtersum) from (select partkey, suppkey, sum(quantity) sum, sum(quantity) filter (where discount > 0.05) filtersum, max(tax) tax from lineitem where partkey=1598 group by partkey, suppkey) t group by partkey";
+        resultWithOptimization = computeActual(enableOptimization, sql);
+        resultWithoutOptimization = computeActual(disableOptimization, sql);
+        assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
+        sql = "select partkey, avg(sum) filter (where tax > 0.05), avg(sum) filter (where tax < 0.05), avg(filtersum) from (select partkey, suppkey, sum(quantity) filter (where discount < 0.05) sum, sum(quantity) filter (where discount > 0.05) filtersum, max(tax) tax from lineitem where partkey=1598 group by partkey, suppkey) t group by partkey";
+        resultWithOptimization = computeActual(enableOptimization, sql);
+        resultWithoutOptimization = computeActual(disableOptimization, sql);
+        assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
+        // global aggregation
+        sql = "select sum(quantity) filter (where discount > 0.05), sum(quantity) filter (where discount < 0.05) from lineitem";
+        resultWithOptimization = computeActual(enableOptimization, sql);
+        resultWithoutOptimization = computeActual(disableOptimization, sql);
+        assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
+        // order by
+        sql = "select partkey, array_agg(suppkey order by suppkey) filter (where discount < 0.05), array_agg(suppkey order by suppkey) filter (where discount > 0.05) from lineitem group by partkey";
+        resultWithOptimization = computeActual(enableOptimization, sql);
+        resultWithoutOptimization = computeActual(disableOptimization, sql);
+        assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
+        // grouping sets
+        sql = "SELECT partkey, suppkey, sum(quantity) filter (where discount < 0.05), sum(quantity) filter (where discount > 0.05) from lineitem group by grouping sets((), (partkey), (partkey, suppkey))";
+        resultWithOptimization = computeActual(enableOptimization, sql);
+        resultWithoutOptimization = computeActual(disableOptimization, sql);
+        assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
+        // aggregation over union
+        sql = "SELECT partkey, sum(quantity) filter (where orderkey > 10), sum(quantity) filter (where orderkey > 0) from (select quantity, orderkey, partkey from lineitem union all select totalprice as quantity, orderkey, custkey as partkey from orders) group by partkey";
+        resultWithOptimization = computeActual(enableOptimization, sql);
+        resultWithoutOptimization = computeActual(disableOptimization, sql);
+        assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
+        // aggregation over join
+        sql = "select custkey, sum(quantity) filter (where tax > 0.05), sum(quantity) filter (where tax < 0.05) from lineitem l join orders o on l.orderkey=o.orderkey group by custkey";
+        resultWithOptimization = computeActual(enableOptimization, sql);
+        resultWithoutOptimization = computeActual(disableOptimization, sql);
+        assertEqualsIgnoreOrder(resultWithOptimization, resultWithoutOptimization);
     }
 
     @Test
@@ -7943,6 +7992,56 @@ public abstract class AbstractTestQueries
         assertQuery(enableOptimization, "select orderkey, col1 from orders cross join (select cast(col as varchar) col1 from (values 1) t(col))");
     }
 
+    @Test
+    public void testAddDistinctForSemiJoinBuild()
+    {
+        Session enabled = Session.builder(getSession())
+                .setSystemProperty(ADD_DISTINCT_BELOW_SEMI_JOIN_BUILD, "true")
+                .build();
+        Session disabled = Session.builder(getSession())
+                .setSystemProperty(ADD_DISTINCT_BELOW_SEMI_JOIN_BUILD, "false")
+                .build();
+        @Language("SQL") String sql = "SELECT * FROM customer c WHERE custkey in ( SELECT custkey FROM orders o WHERE o.orderdate > date('1995-01-01'))";
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+        sql = "SELECT * FROM customer c WHERE custkey in ( SELECT distinct custkey FROM orders o WHERE o.orderdate > date('1995-01-01'))";
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+        sql = "SELECT *\n" +
+                "FROM customer c\n" +
+                "WHERE c.custkey IN (\n" +
+                "  SELECT o.custkey\n" +
+                "  FROM orders o\n" +
+                "  WHERE o.totalprice > 1000\n" +
+                ")";
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+        sql = "SELECT c.name\n" +
+                "FROM customer c\n" +
+                "WHERE c.custkey IN (\n" +
+                "    SELECT o.custkey\n" +
+                "    FROM orders o\n" +
+                ")";
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+        sql = "SELECT s.name\n" +
+                "FROM supplier s\n" +
+                "WHERE s.suppkey IN (\n" +
+                "    SELECT l.suppkey\n" +
+                "    FROM lineitem l\n" +
+                ")";
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+        sql = "SELECT c.name FROM customer c WHERE c.custkey IN ( SELECT o.custkey FROM orders o JOIN lineitem l ON o.orderkey = l.orderkey WHERE l.partkey > 1235 )";
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+        sql = "SELECT p.name\n" +
+                "FROM part p\n" +
+                "WHERE p.partkey IN (\n" +
+                "    SELECT l.partkey\n" +
+                "    FROM lineitem l\n" +
+                "    JOIN orders o ON l.orderkey = o.orderkey\n" +
+                "    JOIN customer c ON o.custkey = c.custkey\n" +
+                "    JOIN nation n ON c.nationkey = n.nationkey\n" +
+                "    WHERE n.name = 'UNITED STATES'\n" +
+                ")";
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+    }
+
     /**
      * When optimize_hash_generation is enabled, the "hash_code" operator is used for
      * hashing join/group by values. When it is disabled Type.hash() is used.
@@ -8026,6 +8125,70 @@ public abstract class AbstractTestQueries
         assertQuery(session,
                 "SELECT a * 2, a - 1 FROM (SELECT x * 2 as a FROM (VALUES 15) t(x))",
                 "SELECT * FROM (VALUES (60, 29))");
+    }
+
+    @Test
+    public void testMinMaxByToWindowFunction()
+    {
+        Session enabled = Session.builder(getSession())
+                .setSystemProperty(REWRITE_MIN_MAX_BY_TO_TOP_N, "true")
+                .build();
+        Session disabled = Session.builder(getSession())
+                .setSystemProperty(REWRITE_MIN_MAX_BY_TO_TOP_N, "false")
+                .build();
+        @Language("SQL") String sql = "with t as (SELECT * FROM ( VALUES (3, '2025-01-08', MAP(ARRAY[2, 1], ARRAY[0.34, 0.92])), (1, '2025-01-02', MAP(ARRAY[1, 3], ARRAY[0.23, 0.5])), " +
+                "(7, '2025-01-17', MAP(ARRAY[6, 8], ARRAY[0.60, 0.70])), (2, '2025-01-06', MAP(ARRAY[2, 3, 5, 7], ARRAY[0.75, 0.32, 0.19, 0.46])), " +
+                "(5, '2025-01-14', MAP(ARRAY[8, 4, 6], ARRAY[0.88, 0.99, 0.00])), (4, '2025-01-12', MAP(ARRAY[7, 3, 2], ARRAY[0.33, 0.44, 0.55])), " +
+                "(8, '2025-01-20', MAP(ARRAY[1, 7, 6], ARRAY[0.35, 0.45, 0.55])), (6, '2025-01-16', MAP(ARRAY[9, 1, 3], ARRAY[0.30, 0.40, 0.50])), " +
+                "(2, '2025-01-05', MAP(ARRAY[3, 4], ARRAY[0.98, 0.21])), (1, '2025-01-04', MAP(ARRAY[1, 2], ARRAY[0.45, 0.67])), (7, '2025-01-18', MAP(ARRAY[4, 2, 9], ARRAY[0.80, 0.90, 0.10])), " +
+                "(3, '2025-01-10', MAP(ARRAY[4, 1, 8, 6], ARRAY[0.85, 0.13, 0.42, 0.91])), (8, '2025-01-19', MAP(ARRAY[3, 5], ARRAY[0.15, 0.25])), " +
+                "(4, '2025-01-11', MAP(ARRAY[5, 6], ARRAY[0.11, 0.22])), (5, '2025-01-13', MAP(ARRAY[1, 9], ARRAY[0.66, 0.77])), (6, '2025-01-15', MAP(ARRAY[2, 5], ARRAY[0.10, 0.20])) ) " +
+                "t(id, ds, feature)) select id, max_by(feature, ds), max(ds) from t group by id";
+
+        MaterializedResult result = computeActual(enabled, "explain(type distributed) " + sql);
+        assertNotEquals(((String) result.getMaterializedRows().get(0).getField(0)).indexOf("TopNRowNumber"), -1);
+
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+
+        sql = "with t as (SELECT * FROM ( VALUES (3, '2025-01-08', MAP(ARRAY[2, 1], ARRAY[0.34, 0.92]), MAP(ARRAY['a', 'b'], ARRAY[0.12, 0.88])), " +
+                "(1, '2025-01-02', MAP(ARRAY[1, 3], ARRAY[0.23, 0.5]), MAP(ARRAY['x', 'y'], ARRAY[0.45, 0.55])), (7, '2025-01-17', MAP(ARRAY[6, 8], ARRAY[0.60, 0.70]), MAP(ARRAY['m', 'n'], ARRAY[0.21, 0.79])), " +
+                "(2, '2025-01-06', MAP(ARRAY[2, 3, 5, 7], ARRAY[0.75, 0.32, 0.19, 0.46]), MAP(ARRAY['p', 'q', 'r'], ARRAY[0.11, 0.22, 0.67])), (5, '2025-01-14', MAP(ARRAY[8, 4, 6], ARRAY[0.88, 0.99, 0.00]), MAP(ARRAY['s', 't', 'u'], ARRAY[0.33, 0.44, 0.23])), " +
+                "(4, '2025-01-12', MAP(ARRAY[7, 3, 2], ARRAY[0.33, 0.44, 0.55]), MAP(ARRAY['v', 'w'], ARRAY[0.66, 0.34])), (8, '2025-01-20', MAP(ARRAY[1, 7, 6], ARRAY[0.35, 0.45, 0.55]), MAP(ARRAY['i', 'j', 'k'], ARRAY[0.78, 0.89, 0.12])), " +
+                "(6, '2025-01-16', MAP(ARRAY[9, 1, 3], ARRAY[0.30, 0.40, 0.50]), MAP(ARRAY['c', 'd'], ARRAY[0.90, 0.10])), (2, '2025-01-05', MAP(ARRAY[3, 4], ARRAY[0.98, 0.21]), MAP(ARRAY['e', 'f'], ARRAY[0.56, 0.44])), " +
+                "(1, '2025-01-04', MAP(ARRAY[1, 2], ARRAY[0.45, 0.67]), MAP(ARRAY['g', 'h'], ARRAY[0.23, 0.77])) ) t(id, ds, feature, extra_feature)) " +
+                "select id, max(ds), max_by(feature, ds), max_by(extra_feature, ds) from t group by id";
+
+        result = computeActual(enabled, "explain(type distributed) " + sql);
+        assertNotEquals(((String) result.getMaterializedRows().get(0).getField(0)).indexOf("TopNRowNumber"), -1);
+
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+
+        sql = "with t as (SELECT * FROM ( VALUES (3, '2025-01-08', MAP(ARRAY[2, 1], ARRAY[0.34, 0.92])), (1, '2025-01-02', MAP(ARRAY[1, 3], ARRAY[0.23, 0.5])), " +
+                "(7, '2025-01-17', MAP(ARRAY[6, 8], ARRAY[0.60, 0.70])), (2, '2025-01-06', MAP(ARRAY[2, 3, 5, 7], ARRAY[0.75, 0.32, 0.19, 0.46])), " +
+                "(5, '2025-01-14', MAP(ARRAY[8, 4, 6], ARRAY[0.88, 0.99, 0.00])), (4, '2025-01-12', MAP(ARRAY[7, 3, 2], ARRAY[0.33, 0.44, 0.55])), " +
+                "(8, '2025-01-20', MAP(ARRAY[1, 7, 6], ARRAY[0.35, 0.45, 0.55])), (6, '2025-01-16', MAP(ARRAY[9, 1, 3], ARRAY[0.30, 0.40, 0.50])), " +
+                "(2, '2025-01-05', MAP(ARRAY[3, 4], ARRAY[0.98, 0.21])), (1, '2025-01-04', MAP(ARRAY[1, 2], ARRAY[0.45, 0.67])), (7, '2025-01-18', MAP(ARRAY[4, 2, 9], ARRAY[0.80, 0.90, 0.10])), " +
+                "(3, '2025-01-10', MAP(ARRAY[4, 1, 8, 6], ARRAY[0.85, 0.13, 0.42, 0.91])), (8, '2025-01-19', MAP(ARRAY[3, 5], ARRAY[0.15, 0.25])), " +
+                "(4, '2025-01-11', MAP(ARRAY[5, 6], ARRAY[0.11, 0.22])), (5, '2025-01-13', MAP(ARRAY[1, 9], ARRAY[0.66, 0.77])), (6, '2025-01-15', MAP(ARRAY[2, 5], ARRAY[0.10, 0.20])) ) " +
+                "t(id, ds, feature)) select id, min_by(feature, ds), min(ds) from t group by id";
+
+        result = computeActual(enabled, "explain(type distributed) " + sql);
+        assertNotEquals(((String) result.getMaterializedRows().get(0).getField(0)).indexOf("TopNRowNumber"), -1);
+
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
+
+        sql = "with t as (SELECT * FROM ( VALUES (3, '2025-01-08', MAP(ARRAY[2, 1], ARRAY[0.34, 0.92]), MAP(ARRAY['a', 'b'], ARRAY[0.12, 0.88])), " +
+                "(1, '2025-01-02', MAP(ARRAY[1, 3], ARRAY[0.23, 0.5]), MAP(ARRAY['x', 'y'], ARRAY[0.45, 0.55])), (7, '2025-01-17', MAP(ARRAY[6, 8], ARRAY[0.60, 0.70]), MAP(ARRAY['m', 'n'], ARRAY[0.21, 0.79])), " +
+                "(2, '2025-01-06', MAP(ARRAY[2, 3, 5, 7], ARRAY[0.75, 0.32, 0.19, 0.46]), MAP(ARRAY['p', 'q', 'r'], ARRAY[0.11, 0.22, 0.67])), (5, '2025-01-14', MAP(ARRAY[8, 4, 6], ARRAY[0.88, 0.99, 0.00]), MAP(ARRAY['s', 't', 'u'], ARRAY[0.33, 0.44, 0.23])), " +
+                "(4, '2025-01-12', MAP(ARRAY[7, 3, 2], ARRAY[0.33, 0.44, 0.55]), MAP(ARRAY['v', 'w'], ARRAY[0.66, 0.34])), (8, '2025-01-20', MAP(ARRAY[1, 7, 6], ARRAY[0.35, 0.45, 0.55]), MAP(ARRAY['i', 'j', 'k'], ARRAY[0.78, 0.89, 0.12])), " +
+                "(6, '2025-01-16', MAP(ARRAY[9, 1, 3], ARRAY[0.30, 0.40, 0.50]), MAP(ARRAY['c', 'd'], ARRAY[0.90, 0.10])), (2, '2025-01-05', MAP(ARRAY[3, 4], ARRAY[0.98, 0.21]), MAP(ARRAY['e', 'f'], ARRAY[0.56, 0.44])), " +
+                "(1, '2025-01-04', MAP(ARRAY[1, 2], ARRAY[0.45, 0.67]), MAP(ARRAY['g', 'h'], ARRAY[0.23, 0.77])) ) t(id, ds, feature, extra_feature)) " +
+                "select id, min(ds), min_by(feature, ds), min_by(extra_feature, ds) from t group by id";
+
+        result = computeActual(enabled, "explain(type distributed) " + sql);
+        assertNotEquals(((String) result.getMaterializedRows().get(0).getField(0)).indexOf("TopNRowNumber"), -1);
+
+        assertQueryWithSameQueryRunner(enabled, sql, disabled);
     }
 
     private List<MaterializedRow> getNativeWorkerSessionProperties(List<MaterializedRow> inputRows, String sessionPropertyName)

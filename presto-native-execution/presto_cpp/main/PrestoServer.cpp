@@ -148,12 +148,14 @@ bool cachePeriodicPersistenceEnabled() {
 void registerVeloxCudf() {
 #ifdef PRESTO_ENABLE_CUDF
  facebook::velox::cudf_velox::registerCudf();
+ PRESTO_STARTUP_LOG(INFO) << "cuDF is registered.";
 #endif
 }
 
 void unregisterVeloxCudf() {
 #ifdef PRESTO_ENABLE_CUDF
  facebook::velox::cudf_velox::unregisterCudf();
+ PRESTO_SHUTDOWN_LOG(INFO) << "cuDF is unregistered.";
 #endif
 }
 
@@ -1484,18 +1486,29 @@ void PrestoServer::checkOverload() {
 
   const auto overloadedThresholdCpuPct =
       systemConfig->workerOverloadedThresholdCpuPct();
-  if (overloadedThresholdCpuPct > 0) {
+  const auto overloadedThresholdQueuedDrivers = numDriverThreads() *
+      systemConfig->workerOverloadedThresholdNumQueuedDriversHwMultiplier();
+  if (overloadedThresholdCpuPct > 0 && overloadedThresholdQueuedDrivers > 0) {
     const auto currentUsedCpuPct = cpuMon_.getCPULoadPct();
-    const bool cpuOverloaded = (currentUsedCpuPct > overloadedThresholdCpuPct);
+    const auto currentQueuedDrivers = taskManager_->numQueuedDrivers();
+    const bool cpuOverloaded =
+        (currentUsedCpuPct > overloadedThresholdCpuPct) &&
+        (currentQueuedDrivers > overloadedThresholdQueuedDrivers);
     if (cpuOverloaded && !cpuOverloaded_) {
       LOG(WARNING) << "OVERLOAD: Server CPU is overloaded. Currently used: "
                    << currentUsedCpuPct
-                   << "%, threshold: " << overloadedThresholdCpuPct << "%";
+                   << "% CPU (threshold: " << overloadedThresholdCpuPct
+                   << "%), " << currentQueuedDrivers
+                   << " queued drivers (threshold: "
+                   << overloadedThresholdQueuedDrivers << ")";
     } else if (!cpuOverloaded && cpuOverloaded_) {
       LOG(INFO)
           << "OVERLOAD: Server CPU is no longer overloaded. Currently used: "
-          << currentUsedCpuPct << "%, threshold: " << overloadedThresholdCpuPct
-          << "%";
+          << currentUsedCpuPct
+          << "% CPU (threshold: " << overloadedThresholdCpuPct << "%), "
+          << currentQueuedDrivers
+          << " queued drivers (threshold: " << overloadedThresholdQueuedDrivers
+          << ")";
     }
     RECORD_METRIC_VALUE(kCounterOverloadedCpu, cpuOverloaded ? 100 : 0);
     cpuOverloaded_ = cpuOverloaded;
