@@ -16,6 +16,8 @@ services:
       - "8080:8080"
     volumes:
       - ./coordinator-config.sonnet:/opt/presto-server/etc
+      - ./hive-metastore:/prestissimo/docker-setup/hive-metastore
+      - /home/devavret/Development/Velox/velox-private:/prestissimo/velox
     environment:
       - PRESTO_HOME=/opt/presto-server
     command: ["/opt/presto-server/bin/launcher", "run"]
