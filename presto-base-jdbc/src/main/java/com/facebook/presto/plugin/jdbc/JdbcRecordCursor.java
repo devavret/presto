@@ -15,8 +15,8 @@ package com.facebook.presto.plugin.jdbc;
 
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.type.Type;
-import com.facebook.presto.plugin.jdbc.mapping.ColumnMapping;
 import com.facebook.presto.plugin.jdbc.mapping.ReadFunction;
+import com.facebook.presto.plugin.jdbc.mapping.ReadMapping;
 import com.facebook.presto.plugin.jdbc.mapping.functions.BooleanReadFunction;
 import com.facebook.presto.plugin.jdbc.mapping.functions.DoubleReadFunction;
 import com.facebook.presto.plugin.jdbc.mapping.functions.LongReadFunction;
@@ -71,10 +71,10 @@ public class JdbcRecordCursor
         objectReadFunctions = new ObjectReadFunction[columnHandles.size()];
 
         for (int i = 0; i < this.columnHandles.length; i++) {
-            ColumnMapping columnMapping = jdbcClient.toPrestoType(session, columnHandles.get(i).getJdbcTypeHandle())
+            ReadMapping readMapping = jdbcClient.toPrestoType(session, columnHandles.get(i).getJdbcTypeHandle())
                     .orElseThrow(() -> new VerifyException("Unsupported column type"));
-            Class<?> javaType = columnMapping.getType().getJavaType();
-            ReadFunction readFunction = columnMapping.getReadFunction();
+            Class<?> javaType = readMapping.getType().getJavaType();
+            ReadFunction readFunction = readMapping.getReadFunction();
 
             if (javaType == boolean.class) {
                 booleanReadFunctions[i] = (BooleanReadFunction) readFunction;
@@ -89,7 +89,12 @@ public class JdbcRecordCursor
                 sliceReadFunctions[i] = (SliceReadFunction) readFunction;
             }
             else {
-                objectReadFunctions[i] = (ObjectReadFunction) readFunction;
+                try {
+                    objectReadFunctions[i] = (ObjectReadFunction) readFunction;
+                }
+                catch (NullPointerException e) {
+                    throw new UnsupportedOperationException();
+                }
             }
         }
 

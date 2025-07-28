@@ -152,6 +152,7 @@ SystemConfig::SystemConfig() {
           NONE_PROP(kTaskPartitionedWriterCount),
           NUM_PROP(kConcurrentLifespansPerTask, 1),
           STR_PROP(kTaskMaxPartialAggregationMemory, "16MB"),
+          NUM_PROP(kDriverMaxSplitPreload, 2),
           NUM_PROP(kHttpServerNumIoThreadsHwMultiplier, 1.0),
           NUM_PROP(kHttpServerNumCpuThreadsHwMultiplier, 1.0),
           NONE_PROP(kHttpServerHttpsPort),
@@ -260,6 +261,9 @@ SystemConfig::SystemConfig() {
           BOOL_PROP(kAggregationSpillEnabled, true),
           BOOL_PROP(kOrderBySpillEnabled, true),
           NUM_PROP(kRequestDataSizesMaxWaitSec, 10),
+          STR_PROP(kPluginDir, ""),
+          NUM_PROP(kExchangeIoEvbViolationThresholdMs, 1000),
+          NUM_PROP(kHttpSrvIoEvbViolationThresholdMs, 1000),
       };
 }
 
@@ -397,6 +401,10 @@ std::string SystemConfig::remoteFunctionServerSerde() const {
 
 int32_t SystemConfig::maxDriversPerTask() const {
   return optionalProperty<int32_t>(kMaxDriversPerTask).value();
+}
+
+int32_t SystemConfig::driverMaxSplitPreload() const {
+  return optionalProperty<int32_t>(kDriverMaxSplitPreload).value();
 }
 
 folly::Optional<int32_t> SystemConfig::taskWriterCount() const {
@@ -890,6 +898,20 @@ bool SystemConfig::enableRuntimeMetricsCollection() const {
 
 std::string SystemConfig::prestoDefaultNamespacePrefix() const {
   return optionalProperty(kPrestoDefaultNamespacePrefix).value().append(".");
+}
+
+std::string SystemConfig::pluginDir() const {
+  return optionalProperty(kPluginDir).value();
+}
+
+int32_t SystemConfig::exchangeIoEvbViolationThresholdMs() const {
+  return optionalProperty<int32_t>(kExchangeIoEvbViolationThresholdMs)
+      .value();
+}
+
+int32_t SystemConfig::httpSrvIoEvbViolationThresholdMs() const {
+  return optionalProperty<int32_t>(kHttpSrvIoEvbViolationThresholdMs)
+      .value();
 }
 
 NodeConfig::NodeConfig() {

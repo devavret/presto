@@ -45,6 +45,7 @@
 #include "velox/common/base/StatsReporter.h"
 #include "velox/common/caching/CacheTTLController.h"
 #include "velox/common/caching/SsdCache.h"
+#include "velox/common/dynamic_registry/DynamicLibraryLoader.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/memory/SharedArbitrator.h"
 #include "velox/connectors/Connector.h"
@@ -89,6 +90,8 @@ constexpr char const* kHttps = "https";
 constexpr char const* kTaskUriFormat =
     "{}://{}:{}"; // protocol, address and port
 constexpr char const* kConnectorName = "connector.name";
+constexpr char const* kLinuxSharedLibExt = ".so";
+constexpr char const* kMacOSSharedLibExt = ".dylib";
 
 protocol::NodeState convertNodeState(presto::NodeState nodeState) {
   switch (nodeState) {
@@ -145,17 +148,25 @@ bool cachePeriodicPersistenceEnabled() {
       std::chrono::seconds::zero();
 }
 
+bool isSharedLibrary(const fs::path& path) {
+  std::string pathExt = path.extension().string();
+  std::transform(pathExt.begin(), pathExt.end(), pathExt.begin(), ::tolower);
+  return pathExt == kLinuxSharedLibExt || pathExt == kMacOSSharedLibExt;
+}
+
 void registerVeloxCudf() {
 #ifdef PRESTO_ENABLE_CUDF
- facebook::velox::cudf_velox::registerCudf();
- PRESTO_STARTUP_LOG(INFO) << "cuDF is registered.";
+  facebook::velox::cudf_velox::CudfOptions::getInstance().setPrefix(
+      SystemConfig::instance()->prestoDefaultNamespacePrefix());
+  facebook::velox::cudf_velox::registerCudf();
+  PRESTO_STARTUP_LOG(INFO) << "cuDF is registered.";
 #endif
 }
 
 void unregisterVeloxCudf() {
 #ifdef PRESTO_ENABLE_CUDF
- facebook::velox::cudf_velox::unregisterCudf();
- PRESTO_SHUTDOWN_LOG(INFO) << "cuDF is unregistered.";
+  facebook::velox::cudf_velox::unregisterCudf();
+  PRESTO_SHUTDOWN_LOG(INFO) << "cuDF is unregistered.";
 #endif
 }
 
@@ -388,6 +399,7 @@ void PrestoServer::run() {
   registerRemoteFunctions();
   registerVectorSerdes();
   registerPrestoPlanNodeSerDe();
+  registerDynamicFunctions();
 
   const auto numExchangeHttpClientIoThreads = std::max<size_t>(
       systemConfig->exchangeHttpClientNumIoThreadsHwMultiplier() *
@@ -401,6 +413,12 @@ void PrestoServer::run() {
                            << exchangeHttpIoExecutor_->getName() << "' has "
                            << exchangeHttpIoExecutor_->numThreads()
                            << " threads.";
+  for (auto evb : exchangeHttpIoExecutor_->getAllEventBases()) {
+    evb->setMaxLatency(
+        std::chrono::milliseconds(systemConfig->exchangeIoEvbViolationThresholdMs()),
+        []() { RECORD_METRIC_VALUE(kCounterExchangeIoEvbViolation, 1); },
+        /*dampen=*/false);
+  }
 
   const auto numExchangeHttpClientCpuThreads = std::max<size_t>(
       systemConfig->exchangeHttpClientNumCpuThreadsHwMultiplier() *
@@ -485,6 +503,10 @@ void PrestoServer::run() {
     }
   }
 
+  if (auto factory = getSplitListenerFactory()) {
+    velox::exec::registerSplitListenerFactory(factory);
+  }
+
   if (systemConfig->enableVeloxExprSetLogging()) {
     if (auto listener = getExprSetListener()) {
       velox::exec::registerExprSetListener(listener);
@@ -516,6 +538,12 @@ void PrestoServer::run() {
     PRESTO_STARTUP_LOG(INFO)
         << "HTTP Server CPU executor '" << httpSrvCpuExecutor_->getName()
         << "' has " << httpSrvCpuExecutor_->numThreads() << " threads.";
+    for (auto evb : httpSrvIoExecutor_->getAllEventBases()) {
+      evb->setMaxLatency(
+          std::chrono::milliseconds(systemConfig->httpSrvIoEvbViolationThresholdMs()),
+          []() { RECORD_METRIC_VALUE(kCounterHttpServerIoEvbViolation, 1); },
+          /*dampen=*/false);
+    }
   }
   if (spillerExecutor_ != nullptr) {
     PRESTO_STARTUP_LOG(INFO)
@@ -1131,6 +1159,11 @@ PrestoServer::getExprSetListener() {
   return nullptr;
 }
 
+std::shared_ptr<facebook::velox::exec::SplitListenerFactory>
+PrestoServer::getSplitListenerFactory() {
+  return nullptr;
+}
+
 std::vector<std::unique_ptr<proxygen::RequestHandlerFactory>>
 PrestoServer::getHttpServerFilters() const {
   std::vector<std::unique_ptr<proxygen::RequestHandlerFactory>> filters;
@@ -1484,9 +1517,10 @@ void PrestoServer::checkOverload() {
     memOverloaded_ = memOverloaded;
   }
 
+  static const auto hwConcurrency = std::thread::hardware_concurrency();
   const auto overloadedThresholdCpuPct =
       systemConfig->workerOverloadedThresholdCpuPct();
-  const auto overloadedThresholdQueuedDrivers = numDriverThreads() *
+  const auto overloadedThresholdQueuedDrivers = hwConcurrency *
       systemConfig->workerOverloadedThresholdNumQueuedDriversHwMultiplier();
   if (overloadedThresholdCpuPct > 0 && overloadedThresholdQueuedDrivers > 0) {
     const auto currentUsedCpuPct = cpuMon_.getCPULoadPct();
@@ -1663,6 +1697,33 @@ protocol::NodeStatus PrestoServer::fetchNodeStatus() {
       nonHeapUsed};
 
   return nodeStatus;
+}
+
+void PrestoServer::registerDynamicFunctions() {
+  // For using the non-throwing overloads of functions below.
+  std::error_code ec;
+  const auto systemConfig = SystemConfig::instance();
+  fs::path pluginDir = std::filesystem::current_path().append("plugin");
+  if (!systemConfig->pluginDir().empty()) {
+    pluginDir = systemConfig->pluginDir();
+  }
+  // If it is a valid directory, traverse and call dynamic function loader.
+  if (fs::is_directory(pluginDir, ec)) {
+    PRESTO_STARTUP_LOG(INFO)
+        << "Loading dynamic libraries from directory path: " << pluginDir;
+    for (const auto& dirEntry :
+         std::filesystem::directory_iterator(pluginDir)) {
+      if (isSharedLibrary(dirEntry.path())) {
+        PRESTO_STARTUP_LOG(INFO)
+            << "Loading dynamic libraries from: " << dirEntry.path().string();
+        velox::loadDynamicLibrary(dirEntry.path().c_str());
+      }
+    }
+  } else {
+    PRESTO_STARTUP_LOG(INFO)
+        << "Plugin directory path: " << pluginDir << " is invalid.";
+    return;
+  }
 }
 
 } // namespace facebook::presto

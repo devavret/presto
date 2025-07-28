@@ -42,7 +42,6 @@ import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.google.common.base.Joiner;
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
@@ -55,7 +54,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.plugin.jdbc.mapping.StandardColumnMappings.getColumnMappingFromPrestoType;
+import static com.facebook.presto.plugin.jdbc.mapping.StandardColumnMappings.getWriteMappingForAccumulators;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -78,13 +77,11 @@ public class QueryBuilder
     {
         private final Type type;
         private final Object value;
-        private final JdbcTypeHandle typeHandle;
 
-        public TypeAndValue(Type type, Object value, JdbcTypeHandle typeHandle)
+        public TypeAndValue(Type type, Object value)
         {
             this.type = requireNonNull(type, "type is null");
             this.value = requireNonNull(value, "value is null");
-            this.typeHandle = typeHandle;
         }
 
         public Type getType()
@@ -95,11 +92,6 @@ public class QueryBuilder
         public Object getValue()
         {
             return value;
-        }
-
-        public JdbcTypeHandle getTypeHandle()
-        {
-            return typeHandle;
         }
     }
 
@@ -143,14 +135,8 @@ public class QueryBuilder
                     .addAll(clauses)
                     .add(additionalPredicate.get().getExpression())
                     .build();
-
-            /*  We are passing JdbcTypeHandle as null and later on getting the columnMapping based on presto type itself since there is no way of getting the JdbcTypeHandle at this place. JdbcTypeHandle can be fetched only from JdbcColumnHandle, and we do not have that object in this lambda. The accumulator has no good use since the corresponding function mapping is not rich enough currently and also addition of accumulator results in duplicate where clauses which does not solve any purpose (at least for [equals operator](https://github.com/prestodb/presto/blob/e1f8b4b7adcbec565215b4d81e688f76634db6ed/presto-base-jdbc/src/main/java/com/facebook/presto/plugin/jdbc/optimization/function/OperatorTranslators.java#L49) ).
-                The basic idea behind introducing ColumnMapping was to cater to requirements wherein we want to have control over the writeFunctions. This is particularly useful where we try to map some presto type to some other presto type (e.g array type mapped to json) or for mapping unsupported types to string. The visitFilter method in JdbcComputePushdown() is responsible for creating additionalPredicates. The where clause passed in the query ultimately needs to go through the functionMapping [here](https://github.com/prestodb/presto/blob/e1f8b4b7adcbec565215b4d81e688f76634db6ed/presto-expressions/src/main/java/com/facebook/presto/expressions/translator/FunctionTranslator.java#L49) as part of visitFilter execution.
-                The idea here is functionMapping contains standard operators on standard presto types (currently only bigint) and any new functions added will also mostly cater to other standard types, and it seems very unlikely that some user is trying to map array type to json type along with having where clause on this array type itself. Or some user is trying to map some unsupported type as string and trying to use this unsupported type in where clause as well. https://github.com/trinodb/trino/pull/186#issuecomment-462114999 also suggest that these non standard types are only supported to be able to fetch the data for analytics purpose, and we do not intend to have any additional support for them.
-                So the current code works well until any of above situations arises and more functions are added in presto which belong to these non standard types for row expression translation.
-            */
             accumulator.addAll(additionalPredicate.get().getBoundConstantValues().stream()
-                    .map(constantExpression -> new TypeAndValue(constantExpression.getType(), constantExpression.getValue(), null))
+                    .map(constantExpression -> new TypeAndValue(constantExpression.getType(), constantExpression.getValue()))
                     .collect(ImmutableList.toImmutableList()));
         }
         if (!clauses.isEmpty()) {
@@ -164,7 +150,9 @@ public class QueryBuilder
             TypeAndValue typeAndValue = accumulator.get(i);
             int parameterIndex = i + 1;
             Type type = typeAndValue.getType();
-            WriteFunction writeFunction = getWriteFunction(typeAndValue.getTypeHandle(), client, session, type);
+            WriteFunction writeFunction = getWriteMappingForAccumulators(type)
+                    .orElseThrow(() -> new PrestoException(NOT_SUPPORTED, "Unsupported column type: " + type.getDisplayName()))
+                    .getWriteFunction();
             Class<?> javaType = type.getJavaType();
             Object value = typeAndValue.getValue();
             if (javaType == boolean.class) {
@@ -242,18 +230,6 @@ public class QueryBuilder
                 validType.equals(TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE) ||
                 validType instanceof VarcharType ||
                 validType instanceof CharType;
-    }
-
-    private WriteFunction getWriteFunction(JdbcTypeHandle typeHandle, JdbcClient client, ConnectorSession session, Type type)
-    {
-        if (typeHandle != null) {
-            return client.toPrestoType(session, typeHandle)
-                    .orElseThrow(() -> new VerifyException(format("Unsupported type %s with handle %s", type, typeHandle)))
-                    .getWriteFunction();
-        }
-        return getColumnMappingFromPrestoType(type)
-                .orElseThrow(() -> new VerifyException(format("Unsupported type %s for adding in accumulators", type)))
-                .getWriteFunction();
     }
 
     private List<String> toConjuncts(List<JdbcColumnHandle> columns, TupleDomain<ColumnHandle> tupleDomain, List<TypeAndValue> accumulator)
@@ -345,6 +321,6 @@ public class QueryBuilder
     private static void bindValue(Object value, JdbcColumnHandle columnHandle, List<TypeAndValue> accumulator)
     {
         Type type = columnHandle.getColumnType();
-        accumulator.add(new TypeAndValue(type, value, columnHandle.getJdbcTypeHandle()));
+        accumulator.add(new TypeAndValue(type, value));
     }
 }

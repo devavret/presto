@@ -130,6 +130,9 @@ class PrestoServer {
 
   virtual std::shared_ptr<velox::exec::ExprSetListener> getExprSetListener();
 
+  virtual std::shared_ptr<facebook::velox::exec::SplitListenerFactory>
+    getSplitListenerFactory();
+
   virtual std::vector<std::string> registerVeloxConnectors(
       const fs::path& configDirectoryPath);
 
@@ -182,6 +185,8 @@ class PrestoServer {
   virtual void initVeloxPlanValidator();
 
   VeloxPlanValidator* getVeloxPlanValidator();
+
+  void registerDynamicFunctions();
 
   /// Invoked to get the list of filters passed to the http server.
   virtual std::vector<std::unique_ptr<proxygen::RequestHandlerFactory>>

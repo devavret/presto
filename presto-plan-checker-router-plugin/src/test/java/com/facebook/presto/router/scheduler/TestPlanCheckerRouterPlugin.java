@@ -22,11 +22,17 @@ import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestQueryFramework;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.google.common.collect.ImmutableListMultimap;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ListMultimap;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
+import javax.servlet.http.HttpServletRequest;
+
 import java.net.URI;
+import java.util.Enumeration;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_CATALOG;
@@ -37,6 +43,7 @@ import static com.facebook.presto.nativeworker.NativeQueryRunnerUtils.createLine
 import static com.facebook.presto.nativeworker.NativeQueryRunnerUtils.createRegion;
 import static com.facebook.presto.sidecar.NativeSidecarPluginQueryRunnerUtils.setupNativeSidecarPlugin;
 import static java.util.Collections.emptyList;
+import static java.util.Collections.list;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
@@ -96,8 +103,9 @@ public class TestPlanCheckerRouterPlugin
     @Test
     public void testPlanCheckerPluginWithNativeCompatibleQueries()
     {
-        Scheduler scheduler = new PlanCheckerRouterPluginScheduler(planCheckerRouterConfig);
-        scheduler.setCandidates(planCheckerRouterConfig.getPlanCheckClustersURIs());
+        PlanCheckerRouterPluginPrestoClient planCheckerRouterPluginPrestoClient =
+                new PlanCheckerRouterPluginPrestoClient(planCheckerRouterConfig);
+        Scheduler scheduler = new PlanCheckerRouterPluginScheduler(planCheckerRouterPluginPrestoClient);
 
         // native compatible query
         Optional<URI> target = scheduler.getDestination(
@@ -115,8 +123,9 @@ public class TestPlanCheckerRouterPlugin
     @Test
     public void testPlanCheckerPluginWithNativeIncompatibleQueries()
     {
-        Scheduler scheduler = new PlanCheckerRouterPluginScheduler(planCheckerRouterConfig);
-        scheduler.setCandidates(planCheckerRouterConfig.getPlanCheckClustersURIs());
+        PlanCheckerRouterPluginPrestoClient planCheckerRouterPluginPrestoClient =
+                new PlanCheckerRouterPluginPrestoClient(planCheckerRouterConfig);
+        Scheduler scheduler = new PlanCheckerRouterPluginScheduler(planCheckerRouterPluginPrestoClient);
 
         // native incompatible query
         Optional<URI> target = scheduler.getDestination(
@@ -126,13 +135,26 @@ public class TestPlanCheckerRouterPlugin
                                 PRESTO_TIME_ZONE, "America/Bahia_Banderas",
                                 PRESTO_CATALOG, "tpch",
                                 PRESTO_SCHEMA, "tiny"),
-                        "SELECT EXISTS(SELECT 1 WHERE l.orderkey > 0 OR l.orderkey != 3) FROM lineitem l LIMIT 1"));
+                        "SELECT x AS y FROM (values (1,2), (2,3)) t(x, y) GROUP BY x ORDER BY apply(x, x -> -x) + 2*x"));
         assertTrue(target.isPresent());
         assertEquals(target.get(), planCheckerRouterConfig.getJavaRouterURI());
     }
 
     private static RouterRequestInfo getMockRouterRequestInfo(ListMultimap<String, String> headers, String query)
     {
-        return new RouterRequestInfo("test", Optional.empty(), emptyList(), query, new MockHttpServletRequest(headers));
+        HttpServletRequest servletRequest = new MockHttpServletRequest(headers);
+        return new RouterRequestInfo("test", Optional.empty(), emptyList(), query, parseHeaders(servletRequest), servletRequest.getUserPrincipal());
+    }
+
+    private static Map<String, List<String>> parseHeaders(HttpServletRequest httpServletRequest)
+    {
+        ImmutableMap.Builder<String, List<String>> builder = ImmutableMap.builder();
+        Enumeration<String> headerNames = httpServletRequest.getHeaderNames();
+        while (headerNames.hasMoreElements()) {
+            String headerName = headerNames.nextElement();
+            Enumeration<String> values = httpServletRequest.getHeaders(headerName);
+            builder.put(headerName, list(values));
+        }
+        return builder.build();
     }
 }

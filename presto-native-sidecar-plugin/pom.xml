@@ -9,6 +9,7 @@
     </parent>
 
     <artifactId>presto-native-sidecar-plugin</artifactId>
+    <name>presto-native-sidecar-plugin</name>
     <description>Presto - Native Sidecar Plugin</description>
     <packaging>presto-plugin</packaging>
 
@@ -229,6 +230,25 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <profiles>
+        <profile>
+            <id>skip-native-sidecar-tests</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludes>
+                                <exclude>**/TestNativeSidecar*.java</exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
     <build>
         <plugins>

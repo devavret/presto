@@ -49,6 +49,7 @@ import com.facebook.presto.spi.function.JavaScalarFunctionImplementation;
 import com.facebook.presto.spi.function.ScalarFunctionImplementation;
 import com.facebook.presto.spi.function.Signature;
 import com.facebook.presto.spi.function.SqlFunction;
+import com.facebook.presto.spi.function.SqlFunctionHandle;
 import com.facebook.presto.spi.function.SqlFunctionId;
 import com.facebook.presto.spi.function.SqlFunctionSupplier;
 import com.facebook.presto.spi.function.SqlInvokedFunction;
@@ -68,6 +69,7 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.UncheckedExecutionException;
 import org.weakref.jmx.Managed;
@@ -400,7 +402,12 @@ public class FunctionAndTypeManager
         if (functionNamespaceManagerFactories.putIfAbsent(factory.getName(), factory) != null) {
             throw new IllegalArgumentException(format("Resource group configuration manager '%s' is already registered", factory.getName()));
         }
-        handleResolver.addFunctionNamespace(factory.getName(), factory.getHandleResolver());
+        String name = factory.getName();
+        // SqlFunctionHandle is in SPI and used by multiple function namespace managers, use the same name for it.
+        if (factory.getHandleResolver().getFunctionHandleClass().equals(SqlFunctionHandle.class)) {
+            name = "sql_function_handle";
+        }
+        handleResolver.addFunctionNamespace(name, factory.getHandleResolver());
     }
 
     public void loadTypeManager(String typeManagerName)
@@ -647,6 +654,12 @@ public class FunctionAndTypeManager
         return builtInTypeAndFunctionNamespaceManager.listFunctions(Optional.empty(), Optional.empty()).stream()
                 .filter(function -> operatorNames.contains(function.getSignature().getName()))
                 .collect(toImmutableList());
+    }
+
+    @VisibleForTesting
+    public Map<String, FunctionNamespaceManager<? extends SqlFunction>> getFunctionNamespaceManagers()
+    {
+        return ImmutableMap.copyOf(functionNamespaceManagers);
     }
 
     public FunctionHandle resolveOperator(OperatorType operatorType, List<TypeSignatureProvider> argumentTypes)

@@ -499,7 +499,7 @@ TEST_F(RowExpressionTest, call) {
         ],
         "displayName": "EQUAL",
         "functionHandle": {
-          "@type": "json_file",
+          "@type": "sql_function_handle",
           "functionId": "json.x4.eq;INTEGER;INTEGER",
           "version": "1"
         },
@@ -550,7 +550,7 @@ TEST_F(RowExpressionTest, castToVarchar) {
 
     auto returnExpr = std::dynamic_pointer_cast<const CastTypedExpr>(expr);
     ASSERT_NE(returnExpr, nullptr);
-    ASSERT_FALSE(returnExpr->nullOnFailure());
+    ASSERT_FALSE(returnExpr->isTryCast());
     ASSERT_EQ(returnExpr->type()->toString(), "VARCHAR");
   }
   // TRY_CAST(varchar_col AS varchar)
@@ -562,7 +562,7 @@ TEST_F(RowExpressionTest, castToVarchar) {
 
     auto returnExpr = std::dynamic_pointer_cast<const CastTypedExpr>(expr);
     ASSERT_NE(returnExpr, nullptr);
-    ASSERT_TRUE(returnExpr->nullOnFailure());
+    ASSERT_TRUE(returnExpr->isTryCast());
     ASSERT_EQ(returnExpr->type()->toString(), "VARCHAR");
   }
   // CAST(varchar_col AS varchar(3))
@@ -613,7 +613,7 @@ TEST_F(RowExpressionTest, castToVarchar) {
 
     auto returnExpr = std::dynamic_pointer_cast<const CastTypedExpr>(expr);
     ASSERT_NE(returnExpr, nullptr);
-    ASSERT_FALSE(returnExpr->nullOnFailure());
+    ASSERT_FALSE(returnExpr->isTryCast());
     ASSERT_EQ(returnExpr->type()->toString(), "VARCHAR");
   }
   // TRY_CAST(nonvarchar_col AS varchar(3))
@@ -625,7 +625,7 @@ TEST_F(RowExpressionTest, castToVarchar) {
 
     auto returnExpr = std::dynamic_pointer_cast<const CastTypedExpr>(expr);
     ASSERT_NE(returnExpr, nullptr);
-    ASSERT_TRUE(returnExpr->nullOnFailure());
+    ASSERT_TRUE(returnExpr->isTryCast());
     ASSERT_EQ(returnExpr->type()->toString(), "VARCHAR");
   }
   // CAST(json AS varchar(3))
@@ -935,7 +935,7 @@ TEST_F(RowExpressionTest, likeSimple) {
   ASSERT_NE(callExpr, nullptr);
 
   auto callExprToString = callExpr->toString();
-  ASSERT_EQ(callExprToString, "presto.default.like(\"type\",\"%BRASS\")");
+  ASSERT_EQ(callExprToString, "presto.default.like(\"type\",%BRASS)");
 }
 
 TEST_F(RowExpressionTest, likeWithEscape) {
@@ -999,7 +999,7 @@ TEST_F(RowExpressionTest, likeWithEscape) {
 
   auto callExprToString = callExpr->toString();
   ASSERT_EQ(
-      callExpr->toString(), "presto.default.like(\"type\",\"%BRASS\",\"#\")");
+      callExpr->toString(), "presto.default.like(\"type\",%BRASS,#)");
 }
 
 TEST_F(RowExpressionTest, dereference) {

@@ -275,8 +275,7 @@ public final class FunctionResolution
 
     public boolean isEqualsFunction(FunctionHandle functionHandle)
     {
-        Optional<OperatorType> operatorType = functionAndTypeResolver.getFunctionMetadata(functionHandle).getOperatorType();
-        return operatorType.isPresent() && operatorType.get().getOperator().equals(EQUAL.getOperator());
+        return functionAndTypeResolver.getFunctionMetadata(functionHandle).getOperatorType().map(EQUAL::equals).orElse(false);
     }
 
     @Override
@@ -341,6 +340,12 @@ public final class FunctionResolution
     }
 
     @Override
+    public FunctionHandle arbitraryFunction(Type valueType)
+    {
+        return functionAndTypeResolver.lookupFunction("arbitrary", fromTypes(valueType));
+    }
+
+    @Override
     public boolean isMaxFunction(FunctionHandle functionHandle)
     {
         return functionAndTypeResolver.getFunctionMetadata(functionHandle).getName().equals(functionAndTypeResolver.qualifyObjectName(QualifiedName.of("max")));
@@ -400,11 +405,6 @@ public final class FunctionResolution
         return functionAndTypeResolver.lookupFunction("approx_set", fromTypes(valueType));
     }
 
-    public boolean isEqualFunction(FunctionHandle functionHandle)
-    {
-        return functionAndTypeResolver.getFunctionMetadata(functionHandle).getOperatorType().map(EQUAL::equals).orElse(false);
-    }
-
     public boolean isArrayContainsFunction(FunctionHandle functionHandle)
     {
         return functionAndTypeResolver.getFunctionMetadata(functionHandle).getName().equals(functionAndTypeResolver.qualifyObjectName(QualifiedName.of("contains")));
@@ -418,6 +418,16 @@ public final class FunctionResolution
     public boolean isWindowValueFunction(FunctionHandle functionHandle)
     {
         return windowValueFunctions.contains(functionAndTypeResolver.getFunctionMetadata(functionHandle).getName());
+    }
+
+    public boolean isMapSubSetFunction(FunctionHandle functionHandle)
+    {
+        return functionAndTypeResolver.getFunctionMetadata(functionHandle).getName().equals(functionAndTypeResolver.qualifyObjectName(QualifiedName.of("map_subset")));
+    }
+
+    public boolean isMapFilterFunction(FunctionHandle functionHandle)
+    {
+        return functionAndTypeResolver.getFunctionMetadata(functionHandle).getName().equals(functionAndTypeResolver.qualifyObjectName(QualifiedName.of("map_filter")));
     }
 
     @Override

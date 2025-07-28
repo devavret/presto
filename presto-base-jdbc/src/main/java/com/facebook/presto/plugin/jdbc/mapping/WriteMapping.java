@@ -19,65 +19,52 @@ import com.facebook.presto.plugin.jdbc.mapping.functions.LongWriteFunction;
 import com.facebook.presto.plugin.jdbc.mapping.functions.ObjectWriteFunction;
 import com.facebook.presto.plugin.jdbc.mapping.functions.SliceWriteFunction;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
+/*
+ * JDBC based connectors can control to define how data should be written back to data source by WriteFunctions.
+ */
 public final class WriteMapping
 {
-    private final String dataType;
     private final WriteFunction writeFunction;
 
-    private WriteMapping(String dataType, WriteFunction writeFunction)
+    private WriteMapping(WriteFunction writeFunction)
     {
-        this.dataType = requireNonNull(dataType, "data type is null");
         this.writeFunction = requireNonNull(writeFunction, "writeFunction is null");
     }
 
-    public static WriteMapping booleanMapping(String dataType, BooleanWriteFunction writeFunction)
+    public static WriteMapping createBooleanWriteMapping(BooleanWriteFunction writeFunction)
     {
-        return new WriteMapping(dataType, writeFunction);
+        return new WriteMapping(writeFunction);
     }
 
-    public static WriteMapping longMapping(String dataType, LongWriteFunction writeFunction)
+    public static WriteMapping createLongWriteMapping(LongWriteFunction writeFunction)
     {
-        return new WriteMapping(dataType, writeFunction);
+        return new WriteMapping(writeFunction);
     }
 
-    public static WriteMapping doubleMapping(String dataType, DoubleWriteFunction writeFunction)
+    public static WriteMapping createDoubleWriteMapping(DoubleWriteFunction writeFunction)
     {
-        return new WriteMapping(dataType, writeFunction);
+        return new WriteMapping(writeFunction);
     }
 
-    public static WriteMapping sliceMapping(String dataType, SliceWriteFunction writeFunction)
+    public static WriteMapping createSliceWriteMapping(SliceWriteFunction writeFunction)
     {
-        return new WriteMapping(dataType, writeFunction);
+        return new WriteMapping(writeFunction);
     }
 
-    public static <T> WriteMapping objectMapping(String dataType, Class<T> javaType, ObjectWriteFunction.ObjectWriteFunctionImplementation<T> writeFunctionImplementation)
+    public static <T> WriteMapping createObjectWriteMapping(Class<T> javaType, ObjectWriteFunction.ObjectWriteFunctionImplementation<T> writeFunctionImplementation)
     {
-        return objectMapping(dataType, ObjectWriteFunction.of(javaType, writeFunctionImplementation));
+        return createObjectWriteMapping(ObjectWriteFunction.of(javaType, writeFunctionImplementation));
     }
 
-    public static WriteMapping objectMapping(String dataType, ObjectWriteFunction writeFunction)
+    public static WriteMapping createObjectWriteMapping(ObjectWriteFunction writeFunction)
     {
-        return new WriteMapping(dataType, writeFunction);
-    }
-
-    public String getDataType()
-    {
-        return dataType;
+        return new WriteMapping(writeFunction);
     }
 
     public WriteFunction getWriteFunction()
     {
         return writeFunction;
-    }
-
-    @Override
-    public String toString()
-    {
-        return toStringHelper(this)
-                .add("dataType", dataType)
-                .toString();
     }
 }
