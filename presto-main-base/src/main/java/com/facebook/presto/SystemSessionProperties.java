@@ -115,6 +115,7 @@ public final class SystemSessionProperties
     public static final String QUERY_MAX_BROADCAST_MEMORY = "query_max_broadcast_memory";
     public static final String QUERY_MAX_TOTAL_MEMORY = "query_max_total_memory";
     public static final String QUERY_MAX_TOTAL_MEMORY_PER_NODE = "query_max_total_memory_per_node";
+    public static final String QUERY_MAX_QUEUED_TIME = "query_max_queued_time";
     public static final String QUERY_MAX_EXECUTION_TIME = "query_max_execution_time";
     public static final String QUERY_MAX_RUN_TIME = "query_max_run_time";
     public static final String RESOURCE_OVERCOMMIT = "resource_overcommit";
@@ -336,8 +337,8 @@ public final class SystemSessionProperties
     public static final String QUERY_CLIENT_TIMEOUT = "query_client_timeout";
     public static final String REWRITE_MIN_MAX_BY_TO_TOP_N = "rewrite_min_max_by_to_top_n";
     public static final String ADD_DISTINCT_BELOW_SEMI_JOIN_BUILD = "add_distinct_below_semi_join_build";
-    public static final String PUSHDOWN_SUBFIELDS_FOR_MAP_SUBSET = "pushdown_subfields_for_map_subset";
     public static final String PUSHDOWN_SUBFIELDS_FOR_MAP_FUNCTIONS = "pushdown_subfields_for_map_functions";
+    public static final String MAX_SERIALIZABLE_OBJECT_SIZE = "max_serializable_object_size";
 
     // TODO: Native execution related session properties that are temporarily put here. They will be relocated in the future.
     public static final String NATIVE_AGGREGATION_SPILL_ALL = "native_aggregation_spill_all";
@@ -566,6 +567,15 @@ public final class SystemSessionProperties
                         VARCHAR,
                         Duration.class,
                         queryManagerConfig.getQueryMaxRunTime(),
+                        false,
+                        value -> Duration.valueOf((String) value),
+                        Duration::toString),
+                new PropertyMetadata<>(
+                        QUERY_MAX_QUEUED_TIME,
+                        "Maximum Queued time of a query",
+                        VARCHAR,
+                        Duration.class,
+                        queryManagerConfig.getQueryMaxQueuedTime(),
                         false,
                         value -> Duration.valueOf((String) value),
                         Duration::toString),
@@ -1918,13 +1928,13 @@ public final class SystemSessionProperties
                         "Optimize out APPROX_DISTINCT operations over constant conditionals",
                         featuresConfig.isOptimizeConditionalApproxDistinct(),
                         false),
-                booleanProperty(PUSHDOWN_SUBFIELDS_FOR_MAP_SUBSET,
-                        "Enable subfield pruning for map_subset function",
-                        featuresConfig.isPushdownSubfieldForMapFunctions(),
-                        false),
                 booleanProperty(PUSHDOWN_SUBFIELDS_FOR_MAP_FUNCTIONS,
                         "Enable subfield pruning for map functions, currently include map_subset and map_filter",
                         featuresConfig.isPushdownSubfieldForMapFunctions(),
+                        false),
+                longProperty(MAX_SERIALIZABLE_OBJECT_SIZE,
+                        "Configure the maximum byte size of a serializable object in expression interpreters",
+                        featuresConfig.getMaxSerializableObjectSize(),
                         false),
                 new PropertyMetadata<>(
                         QUERY_CLIENT_TIMEOUT,
@@ -2186,6 +2196,11 @@ public final class SystemSessionProperties
     public static Duration getQueryMaxRunTime(Session session)
     {
         return session.getSystemProperty(QUERY_MAX_RUN_TIME, Duration.class);
+    }
+
+    public static Duration getQueryMaxQueuedTime(Session session)
+    {
+        return session.getSystemProperty(QUERY_MAX_QUEUED_TIME, Duration.class);
     }
 
     public static Duration getQueryMaxExecutionTime(Session session)
@@ -3280,11 +3295,6 @@ public final class SystemSessionProperties
         return session.getSystemProperty(ADD_EXCHANGE_BELOW_PARTIAL_AGGREGATION_OVER_GROUP_ID, Boolean.class);
     }
 
-    public static boolean isPushSubfieldsForMapSubsetEnabled(Session session)
-    {
-        return session.getSystemProperty(PUSHDOWN_SUBFIELDS_FOR_MAP_SUBSET, Boolean.class);
-    }
-
     public static boolean isPushSubfieldsForMapFunctionsEnabled(Session session)
     {
         return session.getSystemProperty(PUSHDOWN_SUBFIELDS_FOR_MAP_FUNCTIONS, Boolean.class);
@@ -3308,5 +3318,10 @@ public final class SystemSessionProperties
     public static boolean isOptimizeConditionalApproxDistinctEnabled(Session session)
     {
         return session.getSystemProperty(OPTIMIZE_CONDITIONAL_CONSTANT_APPROXIMATE_DISTINCT, Boolean.class);
+    }
+
+    public static long getMaxSerializableObjectSize(Session session)
+    {
+        return session.getSystemProperty(MAX_SERIALIZABLE_OBJECT_SIZE, Long.class);
     }
 }

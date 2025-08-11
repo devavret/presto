@@ -26,13 +26,11 @@ import com.facebook.presto.common.function.OperatorType;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeSignature;
-import com.facebook.presto.execution.QueryManager;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorDeleteTableHandle;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
-import com.facebook.presto.spi.ConnectorMetadataUpdateHandle;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
 import com.facebook.presto.spi.ConnectorResolvedIndex;
 import com.facebook.presto.spi.ConnectorSession;
@@ -573,9 +571,11 @@ public class MetadataManager
                 ConnectorSession connectorSession = session.toConnectorSession(connectorId);
                 metadata.listTables(connectorSession, prefix.getSchemaName()).stream()
                         .map(convertFromSchemaTableName(prefix.getCatalogName()))
-                        .filter(name -> prefix.matches(new QualifiedObjectName(name.getCatalogName(),
+                        .map(name -> new QualifiedObjectName(
+                                name.getCatalogName(),
                                 normalizeIdentifier(session, connectorId.getCatalogName(), name.getSchemaName()),
-                                normalizeIdentifier(session, connectorId.getCatalogName(), name.getObjectName()))))
+                                normalizeIdentifier(session, connectorId.getCatalogName(), name.getObjectName())))
+                        .filter(prefix::matches)
                         .forEach(tables::add);
             }
         }
@@ -998,9 +998,11 @@ public class MetadataManager
                 ConnectorSession connectorSession = session.toConnectorSession(connectorId);
                 metadata.listViews(connectorSession, prefix.getSchemaName()).stream()
                         .map(convertFromSchemaTableName(prefix.getCatalogName()))
-                        .filter(name -> prefix.matches(new QualifiedObjectName(name.getCatalogName(),
+                        .map(name -> new QualifiedObjectName(
+                                name.getCatalogName(),
                                 normalizeIdentifier(session, connectorId.getCatalogName(), name.getSchemaName()),
-                                normalizeIdentifier(session, connectorId.getCatalogName(), name.getObjectName()))))
+                                normalizeIdentifier(session, connectorId.getCatalogName(), name.getObjectName())))
+                        .filter(prefix::matches)
                         .forEach(views::add);
             }
         }
@@ -1314,28 +1316,6 @@ public class MetadataManager
         ConnectorSession connectorSession = session.toConnectorSession(connectorId);
 
         return toListenableFuture(metadata.commitPageSinkAsync(connectorSession, tableHandle.getConnectorHandle(), fragments));
-    }
-
-    @Override
-    public MetadataUpdates getMetadataUpdateResults(Session session, QueryManager queryManager, MetadataUpdates metadataUpdateRequests, QueryId queryId)
-    {
-        ConnectorId connectorId = metadataUpdateRequests.getConnectorId();
-        ConnectorMetadata metadata = getCatalogMetadata(session, connectorId).getMetadata();
-
-        if (queryManager != null && !queriesWithRegisteredCallbacks.contains(queryId)) {
-            // This is the first time we are getting requests for queryId.
-            // Register a callback, so the we do the cleanup when query fails/finishes.
-            queryManager.addStateChangeListener(queryId, state -> {
-                if (state.isDone()) {
-                    metadata.doMetadataUpdateCleanup(queryId);
-                    queriesWithRegisteredCallbacks.remove(queryId);
-                }
-            });
-            queriesWithRegisteredCallbacks.add(queryId);
-        }
-
-        List<ConnectorMetadataUpdateHandle> metadataResults = metadata.getMetadataUpdateResults(metadataUpdateRequests.getMetadataUpdates(), queryId);
-        return new MetadataUpdates(connectorId, metadataResults);
     }
 
     @Override
