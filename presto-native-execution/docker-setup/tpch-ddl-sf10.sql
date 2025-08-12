@@ -1,6 +1,6 @@
-CREATE SCHEMA IF NOT EXISTS hive.sf1_parquet;
+CREATE SCHEMA IF NOT EXISTS hive.sf10_parquet;
 
-USE hive.sf1_parquet;
+USE hive.sf10_parquet;
 
 CREATE TABLE IF NOT EXISTS customer (
    c_custkey bigint,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS part (
   p_mfgr varchar(25),
   p_brand varchar(10),
   p_type varchar(25),
-  p_size integer,
+  p_size bigint,
   p_container varchar(10),
   p_retailprice double,
   p_comment varchar(23)
@@ -88,7 +88,7 @@ WITH (format = 'PARQUET', external_location = 'file:///prestissimo/velox/velox-t
 CREATE TABLE IF NOT EXISTS partsupp (
   ps_partkey bigint,
   ps_suppkey bigint,
-  ps_availqty integer,
+  ps_availqty double,
   ps_supplycost double,
   ps_comment varchar(199)
 )
