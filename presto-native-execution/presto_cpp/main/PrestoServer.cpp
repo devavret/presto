@@ -56,6 +56,7 @@
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/memory/SharedArbitrator.h"
 #include "velox/connectors/Connector.h"
+#include "velox/connectors/ConnectorRegistry.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/storage_adapters/abfs/RegisterAbfsFileSystem.h"
 #include "velox/connectors/hive/storage_adapters/gcs/RegisterGcsFileSystem.h"
@@ -363,7 +364,7 @@ void PrestoServer::run() {
       taskManager_.get(),
       memoryAllocator,
       asyncDataCache,
-      velox::connector::getAllConnectors(),
+      velox::connector::ConnectorRegistry::global().snapshot(),
       this);
   addServerPeriodicTasks();
   addAdditionalPeriodicTasks();
@@ -1472,7 +1473,7 @@ void PrestoServer::registerSystemConnector() {
 
 void PrestoServer::unregisterConnectors() {
   PRESTO_SHUTDOWN_LOG(INFO) << "Unregistering connectors";
-  auto connectors = velox::connector::getAllConnectors();
+  auto connectors = velox::connector::ConnectorRegistry::global().snapshot();
   if (connectors.empty()) {
     PRESTO_SHUTDOWN_LOG(INFO) << "No connectors to unregister";
     return;

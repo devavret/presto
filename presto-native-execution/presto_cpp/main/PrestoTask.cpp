@@ -1002,7 +1002,7 @@ protocol::RuntimeMetric toRuntimeMetric(
       name,
       toPrestoRuntimeUnit(metric.unit),
       metric.sum,
-      metric.count,
+      saturateCast(metric.count),
       metric.max,
       metric.min};
 }

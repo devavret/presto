@@ -13,6 +13,9 @@
  */
 #pragma once
 
+#include <utility>
+#include <vector>
+
 #include <folly/executors/ThreadedRepeatingFunctionRunner.h>
 #include <folly/experimental/FunctionScheduler.h>
 #include "velox/common/memory/Memory.h"
@@ -50,9 +53,9 @@ class PeriodicTaskManager {
       TaskManager* taskManager,
       const velox::memory::MemoryAllocator* memoryAllocator,
       const velox::cache::AsyncDataCache* asyncDataCache,
-      const std::unordered_map<
+      std::vector<std::pair<
           std::string,
-          std::shared_ptr<velox::connector::Connector>>& connectors,
+          std::shared_ptr<velox::connector::Connector>>> connectors,
       PrestoServer* server);
 
   /// Invoked to start all registered, and fundamental periodic tasks running at
@@ -137,9 +140,9 @@ class PeriodicTaskManager {
   const velox::memory::MemoryAllocator* memoryAllocator_;
   const velox::cache::AsyncDataCache* asyncDataCache_;
   const velox::memory::MemoryArbitrator* arbitrator_;
-  const std::unordered_map<
-      std::string,
-      std::shared_ptr<velox::connector::Connector>>& connectors_;
+  const std::vector<
+      std::pair<std::string, std::shared_ptr<velox::connector::Connector>>>
+      connectors_;
   PrestoServer* server_;
 
   int64_t lastHttpClientNumConnectionsCreated_{0};

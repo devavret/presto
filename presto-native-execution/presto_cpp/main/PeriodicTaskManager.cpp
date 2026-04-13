@@ -240,9 +240,9 @@ PeriodicTaskManager::PeriodicTaskManager(
     TaskManager* taskManager,
     const velox::memory::MemoryAllocator* memoryAllocator,
     const velox::cache::AsyncDataCache* asyncDataCache,
-    const std::unordered_map<
+    std::vector<std::pair<
         std::string,
-        std::shared_ptr<velox::connector::Connector>>& connectors,
+        std::shared_ptr<velox::connector::Connector>>> connectors,
     PrestoServer* server)
     : driverCPUExecutor_(driverCPUExecutor),
       spillerExecutor_(spillerExecutor),
@@ -254,7 +254,7 @@ PeriodicTaskManager::PeriodicTaskManager(
       memoryAllocator_(memoryAllocator),
       asyncDataCache_(asyncDataCache),
       arbitrator_(velox::memory::memoryManager()->arbitrator()),
-      connectors_(connectors),
+      connectors_(std::move(connectors)),
       server_(server) {}
 
 void PeriodicTaskManager::start() {
