@@ -12,6 +12,7 @@
  * limitations under the License.
  */
 
+#include <folly/ScopeGuard.h>
 #include <gtest/gtest.h>
 #include "presto_cpp/main/connectors/HivePrestoToVeloxConnector.h"
 #include "presto_cpp/main/connectors/IcebergPrestoToVeloxConnector.h"
@@ -27,6 +28,10 @@
 #include "velox/connectors/hive/iceberg/IcebergColumnHandle.h"
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/type/Filter.h"
+#ifdef PRESTO_ENABLE_CUDF
+#include "velox/experimental/cudf/CudfConfig.h"
+#include "velox/experimental/cudf/connectors/hive/CudfHiveDataSink.h"
+#endif
 
 using namespace facebook::presto;
 using namespace facebook::velox;
@@ -100,6 +105,20 @@ protocol::List<protocol::Column> createTestDataColumns() {
   dataColumns.push_back(col2);
 
   return dataColumns;
+}
+
+protocol::hive::HiveColumnHandle createHiveColumnHandle(
+    const std::string& name,
+    const std::string& hiveType,
+    const std::string& typeSignature,
+    protocol::hive::ColumnType columnType =
+        protocol::hive::ColumnType::REGULAR) {
+  protocol::hive::HiveColumnHandle column;
+  column.name = name;
+  column.hiveType = hiveType;
+  column.typeSignature = typeSignature;
+  column.columnType = columnType;
+  return column;
 }
 
 std::shared_ptr<protocol::ConstantExpression> createTrueConstant() {
@@ -483,16 +502,155 @@ TEST_F(PrestoToVeloxConnectorTest, ctasEmptySerdeParameters) {
   EXPECT_TRUE(hiveInsert->serdeParameters().empty());
 }
 
+#ifdef PRESTO_ENABLE_CUDF
+TEST_F(PrestoToVeloxConnectorTest, ctasParquetUsesCudfHiveInsertTableHandle) {
+  const auto previousCudfEnabled =
+      cudf_velox::CudfConfig::getInstance().enabled;
+  cudf_velox::CudfConfig::getInstance().enabled = true;
+  SCOPE_EXIT {
+    cudf_velox::CudfConfig::getInstance().enabled = previousCudfEnabled;
+  };
+
+  auto hiveOutputTableHandle =
+      std::make_shared<protocol::hive::HiveOutputTableHandle>();
+  hiveOutputTableHandle->schemaName = "test_schema";
+  hiveOutputTableHandle->tableName = "test_table";
+  hiveOutputTableHandle->tableOwner = "owner";
+  hiveOutputTableHandle->inputColumns = {
+      createHiveColumnHandle("col1", "bigint", "bigint"),
+      createHiveColumnHandle("col2", "string", "varchar")};
+  hiveOutputTableHandle->actualStorageFormat =
+      protocol::hive::HiveStorageFormat::PARQUET;
+  hiveOutputTableHandle->tableStorageFormat =
+      protocol::hive::HiveStorageFormat::PARQUET;
+  hiveOutputTableHandle->partitionStorageFormat =
+      protocol::hive::HiveStorageFormat::PARQUET;
+  hiveOutputTableHandle->compressionCodec =
+      protocol::hive::HiveCompressionCodec::SNAPPY;
+  hiveOutputTableHandle->locationHandle.targetPath = "/path/to/target";
+  hiveOutputTableHandle->locationHandle.writePath = "/path/to/target";
+  hiveOutputTableHandle->locationHandle.tableType =
+      protocol::hive::TableType::NEW;
+
+  protocol::OutputTableHandle outputHandle;
+  outputHandle.connectorId = "hive";
+  outputHandle.connectorHandle = hiveOutputTableHandle;
+
+  protocol::CreateHandle createHandle;
+  createHandle.handle = outputHandle;
+
+  HivePrestoToVeloxConnector hiveConnector("hive");
+  auto result =
+      hiveConnector.toVeloxInsertTableHandle(&createHandle, *typeParser_);
+  ASSERT_NE(result, nullptr);
+
+  auto* cudfInsert =
+      dynamic_cast<cudf_velox::connector::hive::CudfHiveInsertTableHandle*>(
+          result.get());
+  ASSERT_NE(cudfInsert, nullptr);
+  EXPECT_EQ(cudfInsert->inputColumns().size(), 2);
+  EXPECT_EQ(cudfInsert->inputColumns()[0]->name(), "col1");
+  EXPECT_EQ(cudfInsert->storageFormat(), dwio::common::FileFormat::PARQUET);
+  ASSERT_TRUE(cudfInsert->compressionKind().has_value());
+  EXPECT_EQ(
+      cudfInsert->compressionKind().value(), common::CompressionKind_SNAPPY);
+}
+
+TEST_F(PrestoToVeloxConnectorTest, ctasNonParquetDoesNotUseCudfHiveHandle) {
+  const auto previousCudfEnabled =
+      cudf_velox::CudfConfig::getInstance().enabled;
+  cudf_velox::CudfConfig::getInstance().enabled = true;
+  SCOPE_EXIT {
+    cudf_velox::CudfConfig::getInstance().enabled = previousCudfEnabled;
+  };
+
+  auto hiveOutputTableHandle =
+      std::make_shared<protocol::hive::HiveOutputTableHandle>();
+  hiveOutputTableHandle->schemaName = "test_schema";
+  hiveOutputTableHandle->tableName = "test_table";
+  hiveOutputTableHandle->tableOwner = "owner";
+  hiveOutputTableHandle->inputColumns = {
+      createHiveColumnHandle("col1", "bigint", "bigint")};
+  hiveOutputTableHandle->actualStorageFormat =
+      protocol::hive::HiveStorageFormat::DWRF;
+  hiveOutputTableHandle->tableStorageFormat =
+      protocol::hive::HiveStorageFormat::DWRF;
+  hiveOutputTableHandle->partitionStorageFormat =
+      protocol::hive::HiveStorageFormat::DWRF;
+  hiveOutputTableHandle->compressionCodec =
+      protocol::hive::HiveCompressionCodec::NONE;
+  hiveOutputTableHandle->locationHandle.targetPath = "/path/to/target";
+  hiveOutputTableHandle->locationHandle.writePath = "/path/to/target";
+  hiveOutputTableHandle->locationHandle.tableType =
+      protocol::hive::TableType::NEW;
+
+  protocol::OutputTableHandle outputHandle;
+  outputHandle.connectorId = "hive";
+  outputHandle.connectorHandle = hiveOutputTableHandle;
+
+  protocol::CreateHandle createHandle;
+  createHandle.handle = outputHandle;
+
+  HivePrestoToVeloxConnector hiveConnector("hive");
+  auto result =
+      hiveConnector.toVeloxInsertTableHandle(&createHandle, *typeParser_);
+  ASSERT_NE(result, nullptr);
+
+  auto* hiveInsert =
+      dynamic_cast<connector::hive::HiveInsertTableHandle*>(result.get());
+  ASSERT_NE(hiveInsert, nullptr);
+}
+
+TEST_F(PrestoToVeloxConnectorTest, insertParquetUsesCudfHiveInsertTableHandle) {
+  const auto previousCudfEnabled =
+      cudf_velox::CudfConfig::getInstance().enabled;
+  cudf_velox::CudfConfig::getInstance().enabled = true;
+  SCOPE_EXIT {
+    cudf_velox::CudfConfig::getInstance().enabled = previousCudfEnabled;
+  };
+
+  auto protoHandle = std::make_shared<protocol::hive::HiveInsertTableHandle>();
+  protoHandle->_type = "hive";
+  protoHandle->inputColumns = {
+      createHiveColumnHandle("col1", "bigint", "bigint")};
+  protoHandle->locationHandle.targetPath = "/target";
+  protoHandle->locationHandle.writePath = "/write";
+  protoHandle->locationHandle.tableType = protocol::hive::TableType::EXISTING;
+  protoHandle->actualStorageFormat = protocol::hive::HiveStorageFormat::PARQUET;
+  protoHandle->compressionCodec = protocol::hive::HiveCompressionCodec::SNAPPY;
+
+  auto table = std::make_shared<protocol::hive::Table>();
+  table->storage.serdeParameters = {{"parquet.writer.version", "v2"}};
+  protoHandle->pageSinkMetadata.table = table;
+
+  protocol::InsertHandle insertHandle;
+  insertHandle.handle.connectorHandle = protoHandle;
+  insertHandle.handle.connectorId = "hive";
+
+  HivePrestoToVeloxConnector hiveConnector("hive");
+  auto result =
+      hiveConnector.toVeloxInsertTableHandle(&insertHandle, *typeParser_);
+  ASSERT_NE(result, nullptr);
+
+  auto* cudfInsert =
+      dynamic_cast<cudf_velox::connector::hive::CudfHiveInsertTableHandle*>(
+          result.get());
+  ASSERT_NE(cudfInsert, nullptr);
+  EXPECT_EQ(
+      cudfInsert->locationHandle()->tableType(),
+      cudf_velox::connector::hive::LocationHandle::TableType::kExisting);
+  EXPECT_EQ(cudfInsert->locationHandle()->targetPath(), "/target");
+  EXPECT_EQ(cudfInsert->locationHandle()->writePath(), "/write");
+  EXPECT_EQ(cudfInsert->serdeParameters().at("parquet.writer.version"), "v2");
+}
+#endif
+
 TEST_F(PrestoToVeloxConnectorTest, hiveInsertTableHandleTableParameters) {
   auto protoHandle = std::make_shared<protocol::hive::HiveInsertTableHandle>();
   protoHandle->_type = "hive";
 
-  protocol::hive::HiveColumnHandle col;
-  col.name = "col1";
-  col.hiveType = "int";
-  col.typeSignature = "integer";
-  col.columnType = protocol::hive::ColumnType::REGULAR;
-  protoHandle->inputColumns = {col};
+  protoHandle->inputColumns = {
+      createHiveColumnHandle("col1", "int", "integer")};
 
   protoHandle->locationHandle.targetPath = "/target";
   protoHandle->locationHandle.writePath = "/write";

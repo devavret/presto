@@ -26,8 +26,12 @@ if(PRESTO_ENABLE_ARROW_FLIGHT_CONNECTOR)
 endif()
 
 if(PRESTO_ENABLE_CUDF)
-   target_link_libraries(presto_connectors velox_cudf_hive_connector
-                        ucxx::ucxx cudf::cudf)
+  target_link_libraries(
+    presto_connectors
+    velox_cudf_exec
+    velox_cudf_hive_connector
+    ucxx::ucxx
+    cudf::cudf)
 endif()
 
 target_link_libraries(

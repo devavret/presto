@@ -14,6 +14,7 @@
 
 #include "presto_cpp/main/connectors/HivePrestoToVeloxConnector.h"
 
+#include <optional>
 #include <string_view>
 #include <unordered_set>
 
@@ -22,12 +23,19 @@
 #include "presto_cpp/main/types/TypeParser.h"
 #include "presto_cpp/presto_protocol/connector/hive/HiveConnectorProtocol.h"
 
+#include <glog/logging.h>
+#include "velox/common/compression/Compression.h"
 #include <velox/type/fbhive/HiveTypeParser.h>
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/connectors/hive/HiveDataSink.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/type/Filter.h"
+#ifdef PRESTO_ENABLE_CUDF
+#include "velox/experimental/cudf/CudfConfig.h"
+#include "velox/experimental/cudf/connectors/hive/CudfHiveDataSink.h"
+#include "velox/experimental/cudf/exec/VeloxCudfInterop.h"
+#endif
 
 namespace facebook::presto {
 using namespace velox;
@@ -57,6 +65,30 @@ std::shared_ptr<connector::hive::LocationHandle> toLocationHandle(
       locationHandle.writePath,
       toTableType(locationHandle.tableType));
 }
+
+#ifdef PRESTO_ENABLE_CUDF
+namespace cudf_hive = velox::cudf_velox::connector::hive;
+
+std::shared_ptr<cudf_hive::LocationHandle> toCudfLocationHandle(
+    const protocol::hive::LocationHandle& locationHandle) {
+  auto tableType = cudf_hive::LocationHandle::TableType::kNew;
+  switch (locationHandle.tableType) {
+    case protocol::hive::TableType::NEW:
+    case protocol::hive::TableType::TEMPORARY:
+      tableType = cudf_hive::LocationHandle::TableType::kNew;
+      break;
+    case protocol::hive::TableType::EXISTING:
+      tableType = cudf_hive::LocationHandle::TableType::kExisting;
+      break;
+    default:
+      VELOX_UNSUPPORTED(
+          "Unsupported cuDF Hive table type: {}.",
+          toJsonString(locationHandle.tableType));
+  }
+  return std::make_shared<cudf_hive::LocationHandle>(
+      locationHandle.targetPath, locationHandle.writePath, tableType);
+}
+#endif
 
 velox::connector::hive::HiveBucketProperty::Kind toHiveBucketPropertyKind(
     protocol::hive::BucketFunctionType bucketFuncType) {
@@ -192,6 +224,150 @@ toHiveBucketProperty(
       bucketedTypes,
       sortedBy);
 }
+
+#ifdef PRESTO_ENABLE_CUDF
+bool isCudfSupportedType(const TypePtr& type) {
+  switch (type->kind()) {
+    case TypeKind::BOOLEAN:
+    case TypeKind::TINYINT:
+    case TypeKind::SMALLINT:
+    case TypeKind::INTEGER:
+    case TypeKind::BIGINT:
+    case TypeKind::REAL:
+    case TypeKind::DOUBLE:
+    case TypeKind::VARCHAR:
+    case TypeKind::VARBINARY:
+    case TypeKind::TIMESTAMP:
+      return true;
+    case TypeKind::HUGEINT:
+      return type->isDecimal();
+    case TypeKind::ARRAY:
+    case TypeKind::ROW:
+      for (uint32_t i = 0; i < type->size(); ++i) {
+        if (!isCudfSupportedType(type->childAt(i))) {
+          return false;
+        }
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isCudfSupportedCompression(common::CompressionKind compressionKind) {
+  switch (compressionKind) {
+    case common::CompressionKind_NONE:
+    case common::CompressionKind_SNAPPY:
+    case common::CompressionKind_LZ4:
+    case common::CompressionKind_ZSTD:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::vector<cudf_hive::CudfHiveColumnHandle> toCudfHiveColumnChildren(
+    const TypePtr& type) {
+  std::vector<cudf_hive::CudfHiveColumnHandle> children;
+  if (type->kind() != TypeKind::ARRAY && type->kind() != TypeKind::ROW) {
+    return children;
+  }
+
+  children.reserve(type->size());
+  for (uint32_t i = 0; i < type->size(); ++i) {
+    const auto& childType = type->childAt(i);
+    const auto childName = type->kind() == TypeKind::ARRAY
+        ? type->as<TypeKind::ARRAY>().nameOf(i)
+        : type->as<TypeKind::ROW>().nameOf(i);
+    children.emplace_back(
+        childName,
+        childType,
+        cudf_velox::veloxToCudfDataType(childType),
+        toCudfHiveColumnChildren(childType));
+  }
+  return children;
+}
+
+std::shared_ptr<const cudf_hive::CudfHiveColumnHandle> toCudfHiveColumn(
+    const protocol::hive::HiveColumnHandle& column,
+    const TypeParser& typeParser) {
+  const auto type = stringToType(column.typeSignature, typeParser);
+  return std::make_shared<cudf_hive::CudfHiveColumnHandle>(
+      column.name,
+      type,
+      cudf_velox::veloxToCudfDataType(type),
+      toCudfHiveColumnChildren(type));
+}
+
+std::vector<std::shared_ptr<const cudf_hive::CudfHiveColumnHandle>>
+toCudfHiveColumns(
+    const protocol::List<protocol::hive::HiveColumnHandle>& inputColumns,
+    const TypeParser& typeParser) {
+  std::vector<std::shared_ptr<const cudf_hive::CudfHiveColumnHandle>>
+      cudfColumns;
+  cudfColumns.reserve(inputColumns.size());
+  for (const auto& column : inputColumns) {
+    cudfColumns.push_back(toCudfHiveColumn(column, typeParser));
+  }
+  return cudfColumns;
+}
+
+std::optional<std::string> cudfHiveInsertTableHandleFallbackReason(
+    bool isPartitioned,
+    const protocol::List<protocol::hive::HiveColumnHandle>& inputColumns,
+    const protocol::hive::LocationHandle& locationHandle,
+    const std::shared_ptr<protocol::hive::HiveBucketProperty>& bucketProperty,
+    protocol::hive::HiveStorageFormat storageFormat,
+    common::CompressionKind compressionKind,
+    const TypeParser& typeParser) {
+  if (!cudf_velox::CudfConfig::getInstance().enabled) {
+    return "cudf.enabled is false";
+  }
+
+  if (isPartitioned) {
+    return "partitioned table writes are not supported by CudfHiveDataSink";
+  }
+
+  if (storageFormat != protocol::hive::HiveStorageFormat::PARQUET) {
+    return fmt::format(
+        "storage format is {}, expected PARQUET", toJsonString(storageFormat));
+  }
+
+  if (!isCudfSupportedCompression(compressionKind)) {
+    return fmt::format(
+        "compression {} is not supported by CudfHiveDataSink",
+        common::compressionKindToString(compressionKind));
+  }
+
+  if (bucketProperty != nullptr) {
+    return "bucketed table writes are not supported by CudfHiveDataSink";
+  }
+
+  if (locationHandle.tableType != protocol::hive::TableType::NEW &&
+      locationHandle.tableType != protocol::hive::TableType::TEMPORARY &&
+      locationHandle.tableType != protocol::hive::TableType::EXISTING) {
+    return fmt::format(
+        "table type {} is not supported", toJsonString(locationHandle.tableType));
+  }
+
+  for (const auto& column : inputColumns) {
+    if (column.columnType == protocol::hive::ColumnType::PARTITION_KEY) {
+      return fmt::format(
+          "partition column {} is not supported by CudfHiveDataSink",
+          column.name);
+    }
+
+    if (!isCudfSupportedType(stringToType(column.typeSignature, typeParser))) {
+      return fmt::format(
+          "column {} has unsupported type {}",
+          column.name,
+          column.typeSignature);
+    }
+  }
+
+  return std::nullopt;
+}
+#endif
 
 std::unique_ptr<velox::connector::hive::HiveColumnHandle>
 toVeloxHiveColumnHandle(
@@ -408,6 +584,34 @@ HivePrestoToVeloxConnector::toVeloxInsertTableHandle(
       hiveOutputTableHandle->inputColumns, typeParser, isPartitioned);
   auto serdeParameters =
       extractSerdeParameters(hiveOutputTableHandle->additionalTableParameters);
+  auto compressionKind =
+      toFileCompressionKind(hiveOutputTableHandle->compressionCodec);
+
+#ifdef PRESTO_ENABLE_CUDF
+  const auto cudfFallbackReason = cudfHiveInsertTableHandleFallbackReason(
+      isPartitioned,
+      hiveOutputTableHandle->inputColumns,
+      hiveOutputTableHandle->locationHandle,
+      hiveOutputTableHandle->bucketProperty,
+      hiveOutputTableHandle->actualStorageFormat,
+      compressionKind,
+      typeParser);
+  if (!cudfFallbackReason.has_value()) {
+    return std::make_unique<cudf_hive::CudfHiveInsertTableHandle>(
+        toCudfHiveColumns(hiveOutputTableHandle->inputColumns, typeParser),
+        toCudfLocationHandle(hiveOutputTableHandle->locationHandle),
+        std::optional(compressionKind),
+        std::move(serdeParameters));
+  }
+  if (cudf_velox::CudfConfig::getInstance().enabled) {
+    LOG(WARNING) << fmt::format(
+        "Using CPU Hive insert handle for {}.{} instead of "
+        "CudfHiveInsertTableHandle: {}",
+        hiveOutputTableHandle->schemaName,
+        hiveOutputTableHandle->tableName,
+        cudfFallbackReason.value());
+  }
+#endif
 
   return std::make_unique<velox::connector::hive::HiveInsertTableHandle>(
       inputColumns,
@@ -415,8 +619,7 @@ HivePrestoToVeloxConnector::toVeloxInsertTableHandle(
       toFileFormat(hiveOutputTableHandle->actualStorageFormat, "TableWrite"),
       toHiveBucketProperty(
           inputColumns, hiveOutputTableHandle->bucketProperty, typeParser),
-      std::optional(
-          toFileCompressionKind(hiveOutputTableHandle->compressionCodec)),
+      std::optional(compressionKind),
       std::move(serdeParameters));
 }
 
@@ -434,17 +637,44 @@ HivePrestoToVeloxConnector::toVeloxInsertTableHandle(
   bool isPartitioned{false};
   const auto inputColumns = toHiveColumns(
       hiveInsertTableHandle->inputColumns, typeParser, isPartitioned);
+  auto compressionKind =
+      toFileCompressionKind(hiveInsertTableHandle->compressionCodec);
 
   const auto table = hiveInsertTableHandle->pageSinkMetadata.table;
   VELOX_USER_CHECK_NOT_NULL(table, "Table must not be null for insert query");
+
+#ifdef PRESTO_ENABLE_CUDF
+  const auto cudfFallbackReason = cudfHiveInsertTableHandleFallbackReason(
+      isPartitioned,
+      hiveInsertTableHandle->inputColumns,
+      hiveInsertTableHandle->locationHandle,
+      hiveInsertTableHandle->bucketProperty,
+      hiveInsertTableHandle->actualStorageFormat,
+      compressionKind,
+      typeParser);
+  if (!cudfFallbackReason.has_value()) {
+    return std::make_unique<cudf_hive::CudfHiveInsertTableHandle>(
+        toCudfHiveColumns(hiveInsertTableHandle->inputColumns, typeParser),
+        toCudfLocationHandle(hiveInsertTableHandle->locationHandle),
+        std::optional(compressionKind),
+        std::unordered_map<std::string, std::string>(
+            table->storage.serdeParameters.begin(),
+            table->storage.serdeParameters.end()));
+  }
+  if (cudf_velox::CudfConfig::getInstance().enabled) {
+    LOG(WARNING) << fmt::format(
+        "Using CPU Hive insert handle instead of CudfHiveInsertTableHandle: {}",
+        cudfFallbackReason.value());
+  }
+#endif
+
   return std::make_unique<connector::hive::HiveInsertTableHandle>(
       inputColumns,
       toLocationHandle(hiveInsertTableHandle->locationHandle),
       toFileFormat(hiveInsertTableHandle->actualStorageFormat, "TableWrite"),
       toHiveBucketProperty(
           inputColumns, hiveInsertTableHandle->bucketProperty, typeParser),
-      std::optional(
-          toFileCompressionKind(hiveInsertTableHandle->compressionCodec)),
+      std::optional(compressionKind),
       std::unordered_map<std::string, std::string>(
           table->storage.serdeParameters.begin(),
           table->storage.serdeParameters.end()),
