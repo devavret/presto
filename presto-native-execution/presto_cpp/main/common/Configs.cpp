@@ -225,6 +225,7 @@ SystemConfig::SystemConfig() {
           BOOL_PROP(kUseMmapAllocator, true),
           STR_PROP(kMemoryArbitratorKind, ""),
           NUM_PROP(kQueryMemoryGb, 38),
+          NONE_PROP(kCudfGpuMemoryCapacity),
           STR_PROP(kSharedArbitratorReservedCapacity, "4GB"),
           STR_PROP(kSharedArbitratorMemoryPoolInitialCapacity, "128MB"),
           STR_PROP(kSharedArbitratorMemoryPoolReservedCapacity, "64MB"),
@@ -878,6 +879,22 @@ bool SystemConfig::useMmapAllocator() const {
 
 std::string SystemConfig::memoryArbitratorKind() const {
   return optionalProperty<std::string>(kMemoryArbitratorKind).value_or("");
+}
+
+folly::Optional<int64_t> SystemConfig::cudfGpuMemoryCapacity() const {
+  const auto value = optionalProperty(kCudfGpuMemoryCapacity);
+  if (!value.has_value()) {
+    return folly::none;
+  }
+  const auto bytes =
+      velox::config::toCapacity(*value, velox::config::CapacityUnit::BYTE);
+  VELOX_USER_CHECK_GT(bytes, 0, "{} must be positive", kCudfGpuMemoryCapacity);
+  VELOX_USER_CHECK_LE(
+      bytes,
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()),
+      "{} exceeds the supported GPU capacity",
+      kCudfGpuMemoryCapacity);
+  return static_cast<int64_t>(bytes);
 }
 
 int32_t SystemConfig::queryMemoryGb() const {

@@ -201,6 +201,23 @@ TEST_F(ConfigTest, optionalSystemConfigs) {
   ASSERT_EQ(config.discoveryUri(), "my uri");
 }
 
+TEST_F(ConfigTest, cudfGpuMemoryCapacity) {
+  SystemConfig config;
+  init(config, {});
+  EXPECT_FALSE(config.cudfGpuMemoryCapacity().has_value());
+  const std::string key{SystemConfig::kCudfGpuMemoryCapacity};
+  for (const auto& value : {"1GB", "1024MB", "1073741824B"}) {
+    init(config, {{key, value}});
+    ASSERT_TRUE(config.cudfGpuMemoryCapacity().has_value());
+    EXPECT_EQ(*config.cudfGpuMemoryCapacity(), 1LL << 30);
+  }
+  for (const auto& value : {"0B", "-1GB", "garbage", "8192PB"}) {
+    SCOPED_TRACE(value);
+    init(config, {{key, value}});
+    EXPECT_THROW(config.cudfGpuMemoryCapacity(), VeloxUserError);
+  }
+}
+
 TEST_F(ConfigTest, optionalNodeConfigs) {
   NodeConfig config;
   init(config, {});

@@ -19,6 +19,9 @@
 #include "presto_cpp/main/properties/session/SessionProperties.h"
 #include "velox/connectors/hive/HiveConfig.h"
 #include "velox/core/QueryConfig.h"
+#ifdef PRESTO_ENABLE_CUDF
+#include "velox/experimental/cudf/exec/CudfMemoryArbitration.h"
+#endif
 
 using namespace facebook::velox;
 
@@ -170,6 +173,10 @@ QueryContextManager::createAndCacheQueryCtxLocked(
       std::move(pool),
       spillerExecutor_,
       queryId);
+#ifdef PRESTO_ENABLE_CUDF
+  // Attach before tasks construct their custom operator pool hierarchies.
+  velox::cudf_velox::attachCudfMemoryPool(*queryCtx);
+#endif
   return queryContextCache_.insert(queryId, std::move(queryCtx));
 }
 

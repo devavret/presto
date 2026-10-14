@@ -164,6 +164,23 @@ The configuration properties of Presto C++ workers are described here, in alphab
   Max memory usage for each query.
 
 
+``cudf.gpu-memory-capacity``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``data size``
+* **Default value:** unset
+
+  Enables GPU query-pool accounting with the specified capacity shared across
+  queries on this native worker, for example ``8GB``. Requires cuDF support and
+  ``cudf.enabled=true``. The value must be positive and is fixed for the process
+  lifetime. When unset, cuDF continues without a GPU query-pool capacity limit.
+
+  This is a logical budget for accounted GPU allocations. It does not cap
+  untracked CUDA allocations or the physical memory retained by RMM. Configure
+  it separately from ``cudf.memory_percent``, which controls the initial RMM
+  pool size. Registration alone does not add operator spilling support.
+
+
 ``system-memory-gb``
 ^^^^^^^^^^^^^^^^^^^^
 

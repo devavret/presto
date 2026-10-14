@@ -90,6 +90,7 @@
 
 #ifdef PRESTO_ENABLE_CUDF
 #include "velox/experimental/cudf/CudfConfig.h"
+#include "velox/experimental/cudf/exec/CudfMemoryArbitration.h"
 #include "velox/experimental/cudf/exec/ToCudf.h"
 #include "velox/experimental/cudf/expression/PrestoFunctions.h"
 #endif
@@ -205,7 +206,11 @@ void registerVeloxCudf() {
           velox::cudf_velox::CudfConfig::kCudfEnabled)) {
     cudfConfig.initialize(systemConfig->values());
     if (cudfConfig.enabled) {
+      const auto gpuCapacity = systemConfig->cudfGpuMemoryCapacity();
       velox::cudf_velox::registerCudf();
+      if (gpuCapacity.has_value()) {
+        velox::cudf_velox::registerCudfMemoryResource(*gpuCapacity);
+      }
       velox::cudf_velox::registerPrestoFunctions(cudfConfig.functionNamePrefix);
       PRESTO_STARTUP_LOG(INFO) << "cuDF is registered.";
     }

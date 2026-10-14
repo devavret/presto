@@ -17,6 +17,11 @@
 #include "presto_cpp/main/TaskManager.h"
 #include "presto_cpp/main/common/Configs.h"
 #include "velox/core/QueryConfig.h"
+#ifdef PRESTO_ENABLE_CUDF
+#include <folly/ScopeGuard.h>
+#include <cstdlib>
+#include "velox/experimental/cudf/exec/CudfMemoryArbitration.h"
+#endif
 
 namespace facebook::presto {
 
@@ -327,4 +332,80 @@ TEST_F(QueryContextManagerTest, findOrCreateBatchQueryCtxWithAbortedPool) {
   ASSERT_THAT(newPoolName, testing::HasSubstr("batch_"));
   ASSERT_NE(firstPoolName, newPoolName);
 }
+#ifdef PRESTO_ENABLE_CUDF
+TEST_F(QueryContextManagerTest, gpuMemoryPools) {
+  // Registration is process-lived. Re-exec to isolate this test from CPU-only
+  // query-context tests and any CUDA initialization in other suites.
+  const auto previousStyle = testing::FLAGS_gtest_death_test_style;
+  testing::FLAGS_gtest_death_test_style = "threadsafe";
+  SCOPE_EXIT {
+    testing::FLAGS_gtest_death_test_style = previousStyle;
+  };
+  EXPECT_EXIT(
+      ([&] {
+        using namespace velox;
+        const std::string tag{cudf_velox::kCudfMemoryResourceTag};
+        auto* manager = taskManager_->getQueryContextManager();
+        protocol::TaskUpdateRequest update;
+        update.session.systemProperties = {};
+        auto untracked =
+            manager->findOrCreateQueryCtx("untracked.0.0.1.0", update);
+        EXPECT_EQ(untracked->customPool(tag), nullptr);
+
+        auto resource = cudf_velox::registerCudfMemoryResource(32L << 20);
+        auto queryA = manager->findOrCreateQueryCtx("gpuA.0.0.1.0", update);
+        auto queryAOtherTask =
+            manager->findOrCreateQueryCtx("gpuA.1.0.1.0", update);
+        auto queryB = manager->findOrCreateQueryCtx("gpuB.0.0.1.0", update);
+        EXPECT_EQ(queryA, queryAOtherTask);
+        auto rootA = queryA->customPool(tag);
+        auto rootB = queryB->customPool(tag);
+        EXPECT_NE(rootA, nullptr);
+        EXPECT_NE(rootB, nullptr);
+        EXPECT_NE(rootA, rootB);
+        EXPECT_EQ(rootA->arbitrator(), resource->arbitrator());
+        EXPECT_EQ(rootB->arbitrator(), resource->arbitrator());
+        auto leaf = rootA->addLeafChild("accounted-output");
+        leaf->reportExternalAllocation(256);
+        EXPECT_EQ(rootA->usedBytes(), 256);
+        EXPECT_EQ(rootB->usedBytes(), 0);
+        EXPECT_EQ(queryA->pool()->usedBytes(), 0);
+        leaf->reportExternalFree(256);
+
+        {
+          core::PlanFragment plan{std::make_shared<core::ValuesNode>(
+              "values", std::vector<RowVectorPtr>{})};
+          auto task = exec::Task::create(
+              "gpuA-task",
+              std::move(plan),
+              0,
+              queryA,
+              exec::Task::ExecutionMode::kSerial,
+              exec::Consumer{});
+          SCOPE_EXIT {
+            task->requestCancel();
+          };
+          auto* node = task->getOrAddCustomNodePool(tag, "node");
+          EXPECT_EQ(node->root(), rootA.get());
+          EXPECT_NE(
+              dynamic_cast<exec::Task::MemoryReclaimer*>(
+                  node->parent()->reclaimer()),
+              nullptr);
+        }
+
+        manager->clearCache();
+        auto replacement =
+            manager->findOrCreateQueryCtx("gpuA.0.0.1.0", update);
+        auto replacementRoot = replacement->customPool(tag);
+        EXPECT_NE(replacement, queryA);
+        EXPECT_NE(replacementRoot, rootA);
+        EXPECT_NE(replacementRoot->name(), rootA->name());
+        EXPECT_EQ(replacementRoot->arbitrator(), resource->arbitrator());
+        std::_Exit(testing::Test::HasFailure() ? 1 : 0);
+      }()),
+      testing::ExitedWithCode(0),
+      "");
+}
+#endif
+
 } // namespace facebook::presto

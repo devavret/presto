@@ -518,6 +518,12 @@ class SystemConfig : public ConfigBase {
   /// this config only applies if the memory arbitration has been enabled.
   static constexpr std::string_view kQueryMemoryGb{"query-memory-gb"};
 
+  /// Optional logical GPU capacity shared by queries on this worker, e.g. 8GB.
+  /// Enables cuDF query-pool accounting when cuDF is enabled. Independent of
+  /// cudf.memory_percent, which controls RMM's initial pool size.
+  static constexpr std::string_view kCudfGpuMemoryCapacity{
+      "cudf.gpu-memory-capacity"};
+
   /// Specifies the memory arbitrator kind. If it is empty, then there is no
   /// memory arbitration.
   static constexpr std::string_view kMemoryArbitratorKind{
@@ -1281,6 +1287,8 @@ class SystemConfig : public ConfigBase {
   std::string sharedArbitratorGlobalArbitrationWithoutSpill() const;
 
   int32_t queryMemoryGb() const;
+
+  folly::Optional<int64_t> cudfGpuMemoryCapacity() const;
 
   bool enableSystemMemoryPoolUsageTracking() const;
 
